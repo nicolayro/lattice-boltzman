@@ -7,6 +7,7 @@
 #include <math.h>
 #include <unistd.h>
 
+#include <mpi.h>
 
 typedef double real_t;
 typedef int64_t int_t;
@@ -68,9 +69,15 @@ int_t offsets[2][6][2] = {
     { {0,1}, {1,1}, { 1,0}, {0,-1}, {-1, 0}, {-1,1} }  /* Odd rows */
 };
 
+/* MPI Rank and size */
+int rank, size;
 
-#define D_now(i,j,d) density[0][(d)*width*height+(i)*width+(j)]
-#define D_nxt(i,j,d) density[1][(d)*width*height+(i)*width+(j)]
+float *buf = NULL;
+#define Buf(i,j) buf[(i)*(width+1)+(j)]
+
+
+#define D_now(i,j,d) density[0][(d)*width*height/size+(i)*width+(j)]
+#define D_nxt(i,j,d) density[1][(d)*width*height/size+(i)*width+(j)]
 #define V(i,j,x) velocity[2*((i)*width+(j))+(x)]
 #define V_abs(i,j) abs_velocity[(i)*width+(j)]
 
@@ -104,20 +111,39 @@ void options ( int argc, char **argv );
 int
 main ( int argc, char **argv )
 {
-    options ( argc, argv );
+    MPI_Init(&argc, &argv);
+
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    if (rank == 0) {
+        options ( argc, argv );
+        for (int_t i = 1; i < size; ++i) {
+            MPI_Send(&height, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
+            MPI_Send(&width, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
+            MPI_Send(&snap_freq, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
+            MPI_Send(&max_iter, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
+        }
+    } else {
+        MPI_Recv(&height, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Recv(&width, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Recv(&snap_freq, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Recv(&max_iter, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    }
 
     /* Make all required dynamic memory allocations */
-    density[0] = malloc ( 6 * width * height * sizeof(real_t) );
-    density[1] = malloc ( 6 * width * height * sizeof(real_t) );
-    velocity = malloc ( 2 * width * height * sizeof(real_t) );
-    abs_velocity = malloc ( width * height * sizeof(real_t) );
-    map = malloc ( width * height * sizeof(node_type_t) );
+    density[0] = malloc ( 6 * width * height / size * sizeof(real_t) );
+    density[1] = malloc ( 6 * width * height / size * sizeof(real_t) );
+    velocity = malloc ( 2 * width * height / size * sizeof(real_t) );
+    abs_velocity = malloc ( width * height / size * sizeof(real_t) );
+    map = malloc ( width * height / size * sizeof(node_type_t) );
+    buf = malloc( (width+1) * (height/size+1) * sizeof(float));
 
     /* Initialize density distribution to equilibrium, i.e. assume
      * a density of 1 per lattice point, and distribute it evenly
      * in 6 directions.
      */
-    for ( int_t i=0; i<height; i++ )
+    for ( int_t i=0; i<height/size; i++ )
         for ( int_t j=0; j<width; j++ )
             for ( int_t d=0; d<6; d++ )
                 D_now(i,j,d) = D_nxt(i,j,d) = 1.0 / 6.0;
@@ -144,7 +170,7 @@ main ( int argc, char **argv )
         if ( quiet==false && (iter % snap_freq) == 0 )
         {
             store ( iter / snap_freq );
-            if ( !quiet )
+            if (quiet == false && rank == 0)
                 printf ( "Iteration %" INT_FMT " / %" INT_FMT " (%.f %%) \n",
                     iter, max_iter, 100.0*iter/(float)max_iter
                 );
@@ -155,12 +181,15 @@ main ( int argc, char **argv )
     if ( quiet == true )
         store ( max_iter / snap_freq );
 
+    MPI_Finalize();
+
     /* Release the memory and halt */
     free ( density[0] );
     free ( density[1] );
     free ( velocity );
     free ( abs_velocity );
     free ( map );
+    free ( buf );
     exit ( EXIT_SUCCESS );
 }
 
@@ -172,7 +201,7 @@ main ( int argc, char **argv )
 void
 collide ( void )
 {
-    for ( int_t i=0; i<height; i++ )
+    for ( int_t i=0; i<height/size; i++ )
     {
         for ( int_t j=0; j<width; j++ )
         {
@@ -238,7 +267,7 @@ collide ( void )
 void
 stream ( void )
 {
-    for ( int_t i=0; i<height; i++ )
+    for ( int_t i=0; i<height/size; i++ )
     {
         for ( int_t j=0; j<width; j++ )
         {
@@ -246,7 +275,7 @@ stream ( void )
             {
                 /* Compute neighbor indices, wrap around edges */
                 int_t
-                    ni = ( i + offsets[(i%2)][d][0] + height ) % height,
+                    ni = ( i + offsets[(i%2)][d][0] + (height/size) ) % (height/size),
                     nj = ( j + offsets[(i%2)][d][1] + width ) % width;
 
                 /* Propagate present fluid density to neighbor */
@@ -264,32 +293,39 @@ stream ( void )
 void
 store ( int_t iter )
 {
-    for ( int_t i=0; i<height; i++ )
+    for ( int_t i=0; i<height/size; i++ )
         for ( int_t j=0; j<width; j++ )
             V_abs(i,j) = sqrt ( V(i,j,0)*V(i,j,0) + V(i,j,1)*V(i,j,1) );
+
     char filename[256];
     memset ( filename, 0, 256 );
     sprintf ( filename, "data/%.5" INT_FMT ".dat", iter );
-    FILE *out = fopen ( filename, "w" );
-    float f;
-    f = width;
-    fwrite ( &f, sizeof(float), 1, out );
-    for ( int_t j=0; j<width; j++ )
-    {
-        f = j;
-        fwrite ( &f, sizeof(float), 1, out );
+
+    MPI_File out = NULL;
+    MPI_File_open(MPI_COMM_WORLD, filename, MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &out);
+
+    // Write data to buffer for writing
+    if (rank == 0) {
+        Buf(0, 0) = (float) width;
+        for ( int_t j=0; j<width; j++ ) {
+            Buf(0, j+1) = (float) j;
+        }
+        MPI_File_write_at(out, 0, buf, width+1, MPI_FLOAT, MPI_STATUS_IGNORE);
     }
-    for ( int_t i=0; i<height; i++ )
-    {
-        f = i;
-        fwrite ( &f, sizeof(float), 1, out );
-        for ( int_t j=0; j<width; j++ )
-        {
-            f = V_abs(i,j);
-            fwrite ( &f, sizeof(float), 1, out );
+
+    int_t row_offset = rank * height / size;
+    for (int_t i = 0; i<height/size; i++) {
+        Buf(i+1, 0) = (float) i + row_offset;
+        for (int j = 0; j < width; ++j) {
+            Buf(i, j+1) = (float) V_abs(i, j);
         }
     }
-    fclose ( out );
+
+    int_t buf_len = (width+1) * height/size;
+    MPI_Offset offset = (rank * buf_len + width+1) * sizeof(float);
+
+    MPI_File_write_at_all(out, offset, &Buf(1, 0), buf_len, MPI_FLOAT, MPI_STATUS_IGNORE);
+    MPI_File_close(&out);
 }
 
 
@@ -299,23 +335,33 @@ store ( int_t iter )
 void
 initialize_domain ( void )
 {
-    int_t center[2] = { (real_t)(height/2), (real_t)(width/4) };
+    int_t center[2] = { (real_t)(height/2.0), (real_t)(width/4.0) };
 
     /* If no valid value was set from cmd. line, compute obstruction radius */
     if ( radius <= 0.0 )
         radius = height / 20.0;
 
-    /* Top and bottom walls */
-    for ( int_t j=0; j<width; j++ )
-        MAP(0,j) = MAP(height-1,j) = WALL;
+    /* Bottom wall */
+    if (rank == 0) {
+        for ( int_t j=0; j<width; j++ ) {
+            MAP(0, j) = WALL;
+        }
+    }
+    /* Top wall */
+    if (rank == size - 1) {
+        for ( int_t j=0; j<width; j++ ) {
+            MAP(height/size-1,j) = WALL;
+        }
+    }
 
     /* Solid cylinder */
-    for ( int_t i=1; i<height-1; i++ )
+    int_t grid_offset = rank * height / size;
+    for ( int_t i=0; i<height/size; i++ )
     {
         for ( int_t j=0; j<width; j++ )
         {
             if ( radius >
-                sqrt( (i-center[0])*(i-center[0])+(j-center[1])*(j-center[1]) )
+                sqrt( (i+grid_offset-center[0])*(i+grid_offset-center[0])+(j-center[1])*(j-center[1]) )
             )
                 MAP(i,j) = SOLID;
             else
@@ -326,7 +372,7 @@ initialize_domain ( void )
     /* Check all solid points for fluid neighbors, and classify them as
      * WALL if they have any.
      */
-    for ( int_t i=0; i<height; i++ )
+    for ( int_t i=0; i<height/size; i++ )
     {
         for ( int_t j=0; j<width; j++ )
         {
@@ -335,14 +381,16 @@ initialize_domain ( void )
                 for ( int_t d=0; d<6; d++ )
                 {
                     int_t
-                        ni = ( i + offsets[(i%2)][d][0] + height ) % height,
+                        ni = ( i + offsets[(i%2)][d][0] + height/size ) % (height/size),
                         nj = ( j + offsets[(i%2)][d][1] + width ) % width;
+
                     if ( MAP(ni,nj) == FLUID )
                         MAP(i,j) = WALL;
                 }
             }
         }
     }
+
 }
 
 
