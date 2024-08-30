@@ -14,7 +14,6 @@ typedef int64_t int_t;
 #define INT_FMT "lld"
 #define REAL_FMT "lf"
 
-
 /* Simulation parameters. Default values can be overridden by options(). */
 int_t
     height    = 400,        /* Vertical coordinates (index i)   */
@@ -24,6 +23,22 @@ int_t
 bool
     quiet = false;  /* Suppresses stdio and file I/O when true */
 
+
+/* MPI related variables */
+int
+    rank,                   /* MPI rank */
+    comm_size;              /* MPI size */
+int_t
+    local_height,           /* Height of domain subsection */
+    local_offset;           /* Offset from domain's 0 in current subsection */
+
+#define MPI_RANK_ROOT  (rank == 0)
+#define MPI_RANK_FIRST (rank == 0)
+#define MPI_RANK_LAST  (rank == comm_size-1)
+
+/* Buffer for file writing */
+float *buf = NULL;
+#define Buf(i,j) buf[(i)*(width+1)+(j)]
 
 /* Map of the simulated domain, this defines the problem geometry.
  * initialize_domain() sets up a set of SOLID/FLUID points, and
@@ -69,15 +84,8 @@ int_t offsets[2][6][2] = {
     { {0,1}, {1,1}, { 1,0}, {0,-1}, {-1, 0}, {-1,1} }  /* Odd rows */
 };
 
-/* MPI Rank and size */
-int rank, size;
-
-float *buf = NULL;
-#define Buf(i,j) buf[(i)*(width+1)+(j)]
-
-
-#define D_now(i,j,d) density[0][(d)*width*height/size+(i)*width+(j)]
-#define D_nxt(i,j,d) density[1][(d)*width*height/size+(i)*width+(j)]
+#define D_now(i,j,d) density[0][(d)*width*(local_height+2)+(i)*width+(j)]
+#define D_nxt(i,j,d) density[1][(d)*width*(local_height+2)+(i)*width+(j)]
 #define V(i,j,x) velocity[2*((i)*width+(j))+(x)]
 #define V_abs(i,j) abs_velocity[(i)*width+(j)]
 
@@ -91,6 +99,8 @@ void initialize_domain ( void );
 void collide ( void );
     /* Propagate densities from each lattice site to its neighbors */
 void stream ( void );
+    /* Exchange borders between MPI processes */
+void border_exchange(void);
     /* Save simulation state in gnuplot binary matrix format.
      * File names are numbered by iter / snap_freq, and stored in 'data/'
      */
@@ -114,36 +124,35 @@ main ( int argc, char **argv )
     MPI_Init(&argc, &argv);
 
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    MPI_Comm_size(MPI_COMM_WORLD, &comm_size);
 
-    if (rank == 0) {
+    if (MPI_RANK_ROOT) {
         options ( argc, argv );
-        for (int_t i = 1; i < size; ++i) {
-            MPI_Send(&height, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
-            MPI_Send(&width, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
-            MPI_Send(&snap_freq, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
-            MPI_Send(&max_iter, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
-        }
-    } else {
-        MPI_Recv(&height, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        MPI_Recv(&width, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        MPI_Recv(&snap_freq, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        MPI_Recv(&max_iter, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
     }
 
+    MPI_Bcast(&height, 1, MPI_INT64_T, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&width, 1, MPI_INT64_T, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&max_iter, 1, MPI_INT64_T, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&snap_freq, 1, MPI_INT64_T, 0, MPI_COMM_WORLD);
+
+    local_height = height / comm_size;
+    local_offset = rank * local_height;
+
+    printf("[%d] %lld -> %lld\n", rank, local_offset, local_offset + local_height);
+
     /* Make all required dynamic memory allocations */
-    density[0] = malloc ( 6 * width * height / size * sizeof(real_t) );
-    density[1] = malloc ( 6 * width * height / size * sizeof(real_t) );
-    velocity = malloc ( 2 * width * height / size * sizeof(real_t) );
-    abs_velocity = malloc ( width * height / size * sizeof(real_t) );
-    map = malloc ( width * height / size * sizeof(node_type_t) );
-    buf = malloc( (width+1) * (height/size+1) * sizeof(float));
+    density[0] = malloc ( 6 * width * (local_height+2)* sizeof(real_t) );
+    density[1] = malloc ( 6 * width * (local_height+2) * sizeof(real_t) );
+    velocity = malloc ( 2 * width * (local_height+2) * sizeof(real_t) );
+    abs_velocity = malloc ( width * (local_height+2) * sizeof(real_t) );
+    map = malloc ( width * (local_height+2) * sizeof(node_type_t) );
+    buf = malloc( (width+1) * (local_height+1) * sizeof(float));
 
     /* Initialize density distribution to equilibrium, i.e. assume
      * a density of 1 per lattice point, and distribute it evenly
      * in 6 directions.
      */
-    for ( int_t i=0; i<height/size; i++ )
+    for ( int_t i=0; i<local_height+2; i++ )
         for ( int_t j=0; j<width; j++ )
             for ( int_t d=0; d<6; d++ )
                 D_now(i,j,d) = D_nxt(i,j,d) = 1.0 / 6.0;
@@ -159,18 +168,20 @@ main ( int argc, char **argv )
 
     /* Set up the simulated geometry */
     initialize_domain();
+    border_exchange();
 
     /* Time integration loop */
     for ( int_t iter=0; iter<max_iter; iter++ )
     {
         collide();
+        border_exchange();
         stream();
 
         /* Dump velocity field for visualization every snap_freq steps */
         if ( quiet==false && (iter % snap_freq) == 0 )
         {
             store ( iter / snap_freq );
-            if (quiet == false && rank == 0)
+            if (quiet == false && MPI_RANK_ROOT)
                 printf ( "Iteration %" INT_FMT " / %" INT_FMT " (%.f %%) \n",
                     iter, max_iter, 100.0*iter/(float)max_iter
                 );
@@ -201,7 +212,7 @@ main ( int argc, char **argv )
 void
 collide ( void )
 {
-    for ( int_t i=0; i<height/size; i++ )
+    for ( int_t i=1; i<=local_height; i++ )
     {
         for ( int_t j=0; j<width; j++ )
         {
@@ -267,7 +278,7 @@ collide ( void )
 void
 stream ( void )
 {
-    for ( int_t i=0; i<height/size; i++ )
+    for ( int_t i=0; i<local_height+2; i++ )
     {
         for ( int_t j=0; j<width; j++ )
         {
@@ -275,16 +286,36 @@ stream ( void )
             {
                 /* Compute neighbor indices, wrap around edges */
                 int_t
-                    ni = ( i + offsets[(i%2)][d][0] + (height/size) ) % (height/size),
-                    nj = ( j + offsets[(i%2)][d][1] + width ) % width;
+                    ni = ( i-1 + offsets[(i+1)%2][d][0] + (local_height+2)) % (local_height+2),
+                    nj = ( j   + offsets[(i+1)%2][d][1] + width ) % width;
 
                 /* Propagate present fluid density to neighbor */
-                D_now(ni,nj,d) = D_nxt(i,j,d);
+                D_now(ni+1,nj,d) = D_nxt(i,j,d);
             }
         }
     }
 }
 
+void border_exchange(void)
+{
+    int_t rank_prev = !MPI_RANK_FIRST ? rank-1 : MPI_PROC_NULL;
+    int_t rank_next = !MPI_RANK_LAST ? rank+1 : MPI_PROC_NULL;
+
+    // Send south
+    for (int_t d = 0; d < 6; ++d) {
+        MPI_Sendrecv(&D_nxt(1, 0, d), width, MPI_DOUBLE, rank_prev, d,
+                     &D_nxt(local_height+1, 0, d), width, MPI_DOUBLE, rank_next, d,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    }
+
+    // Send north
+    for (int_t d = 0; d < 6; ++d) {
+        MPI_Sendrecv(&D_nxt(local_height, 0, d), width, MPI_DOUBLE, rank_next, d+6,
+                     &D_nxt(0, 0, d), width, MPI_DOUBLE, rank_prev, d+6,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    }
+
+}
 
 /* Save a snapshot of the present velocity field in 'data/xxxxx.dat',
  * in gnuplot binary matrix format. Indices are given by iteration
@@ -293,7 +324,7 @@ stream ( void )
 void
 store ( int_t iter )
 {
-    for ( int_t i=0; i<height/size; i++ )
+    for ( int_t i=1; i<=local_height; i++ )
         for ( int_t j=0; j<width; j++ )
             V_abs(i,j) = sqrt ( V(i,j,0)*V(i,j,0) + V(i,j,1)*V(i,j,1) );
 
@@ -303,9 +334,12 @@ store ( int_t iter )
 
     MPI_File out = NULL;
     MPI_File_open(MPI_COMM_WORLD, filename, MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &out);
+    if (!out) {
+        fprintf(stderr, "Unable to open file %s.\n", filename);
+        exit(EXIT_FAILURE);
+    }
 
-    // Write data to buffer for writing
-    if (rank == 0) {
+    if (MPI_RANK_ROOT) {
         Buf(0, 0) = (float) width;
         for ( int_t j=0; j<width; j++ ) {
             Buf(0, j+1) = (float) j;
@@ -313,16 +347,15 @@ store ( int_t iter )
         MPI_File_write_at(out, 0, buf, width+1, MPI_FLOAT, MPI_STATUS_IGNORE);
     }
 
-    int_t row_offset = rank * height / size;
-    for (int_t i = 0; i<height/size; i++) {
-        Buf(i+1, 0) = (float) i + row_offset;
+    for (int_t i = 1; i<=local_height; i++) {
+        Buf(i, 0) = (float)(i - 1 + local_offset);
         for (int j = 0; j < width; ++j) {
             Buf(i, j+1) = (float) V_abs(i, j);
         }
     }
 
-    int_t buf_len = (width+1) * height/size;
-    MPI_Offset offset = (rank * buf_len + width+1) * sizeof(float);
+    int_t buf_len = local_height * (width+1);
+    MPI_Offset offset = (local_offset+1) * (width+1) * sizeof(float);
 
     MPI_File_write_at_all(out, offset, &Buf(1, 0), buf_len, MPI_FLOAT, MPI_STATUS_IGNORE);
     MPI_File_close(&out);
@@ -335,33 +368,19 @@ store ( int_t iter )
 void
 initialize_domain ( void )
 {
-    int_t center[2] = { (real_t)(height/2.0), (real_t)(width/4.0) };
+    int_t center[2] = { (real_t)(height/2), (real_t)(width/8) };
 
     /* If no valid value was set from cmd. line, compute obstruction radius */
     if ( radius <= 0.0 )
         radius = height / 20.0;
 
-    /* Bottom wall */
-    if (rank == 0) {
-        for ( int_t j=0; j<width; j++ ) {
-            MAP(0, j) = WALL;
-        }
-    }
-    /* Top wall */
-    if (rank == size - 1) {
-        for ( int_t j=0; j<width; j++ ) {
-            MAP(height/size-1,j) = WALL;
-        }
-    }
-
     /* Solid cylinder */
-    int_t grid_offset = rank * height / size;
-    for ( int_t i=0; i<height/size; i++ )
+    for ( int_t i=1; i<=local_height; i++ )
     {
         for ( int_t j=0; j<width; j++ )
         {
             if ( radius >
-                sqrt( (i+grid_offset-center[0])*(i+grid_offset-center[0])+(j-center[1])*(j-center[1]) )
+                sqrt( (i-1+local_offset-center[0])*(i-1+local_offset-center[0])+(j-center[1])*(j-center[1]) )
             )
                 MAP(i,j) = SOLID;
             else
@@ -369,10 +388,23 @@ initialize_domain ( void )
         }
     }
 
+    /* Bottom wall */
+    if (MPI_RANK_FIRST) {
+        for ( int_t j=0; j<width; j++ ) {
+            MAP(1, j) = WALL;
+        }
+    }
+    /* Top wall */
+    if (MPI_RANK_LAST) {
+        for ( int_t j=0; j<width; j++ ) {
+            MAP(local_height,j) = WALL;
+        }
+    }
+
     /* Check all solid points for fluid neighbors, and classify them as
      * WALL if they have any.
      */
-    for ( int_t i=0; i<height/size; i++ )
+    for ( int_t i=1; i<=local_height; i++ )
     {
         for ( int_t j=0; j<width; j++ )
         {
@@ -381,16 +413,15 @@ initialize_domain ( void )
                 for ( int_t d=0; d<6; d++ )
                 {
                     int_t
-                        ni = ( i + offsets[(i%2)][d][0] + height/size ) % (height/size),
-                        nj = ( j + offsets[(i%2)][d][1] + width ) % width;
+                        ni = ( i-1 + offsets[((i-1)%2)][d][0] + height ) % height,
+                        nj = ( j   + offsets[((i-1)%2)][d][1] + width ) % width;
 
-                    if ( MAP(ni,nj) == FLUID )
+                    if ( MAP(ni+1,nj) == FLUID )
                         MAP(i,j) = WALL;
                 }
             }
         }
     }
-
 }
 
 

@@ -7,7 +7,7 @@ LDLIBS+=-lm
 
 IMAGES=$(shell ls data/*.dat | sed s/data/imgs/g | sed s/\.dat/.png/g)
 
-.PHONY: build prod run images anim dirs clean purge
+.PHONY: build prod run images anim dirs clean purge all
 
 build: d2q6.c
 	$(CCLOCAL) $^ $(CFLAGS) $(LDLIBS) -o $(PROGRAM)
@@ -16,7 +16,7 @@ prod: d2q6.c
 	$(CCPROD) $^ $(CFLAGS) -O2 -o $(PROGRAM)
 
 run: build
-	mpirun -np 8 $(PROGRAM)
+	mpirun -np 8 $(PROGRAM) -W 1200 -H 600
 
 short: build
 	mpirun -np 8 $(PROGRAM) -I 10001
@@ -41,3 +41,5 @@ clean:
 
 purge: clean
 	-rm -r d2q6 data imgs
+
+all: clean short images anim open
