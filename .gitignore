@@ -1,2 +1,8 @@
 compile_commands.json
 d2q6
+.cache
+data
+imgs
+vortex_shedding.mp4
+tmp[0-9]
+cmp.sh
