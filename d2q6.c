@@ -168,7 +168,6 @@ main ( int argc, char **argv )
 
     /* Set up the simulated geometry */
     initialize_domain();
-    border_exchange();
 
     /* Time integration loop */
     for ( int_t iter=0; iter<max_iter; iter++ )
@@ -368,7 +367,7 @@ store ( int_t iter )
 void
 initialize_domain ( void )
 {
-    int_t center[2] = { (real_t)(height/2), (real_t)(width/8) };
+    int_t center[2] = { (height/2), (width/4) };
 
     /* If no valid value was set from cmd. line, compute obstruction radius */
     if ( radius <= 0.0 )
