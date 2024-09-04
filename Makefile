@@ -2,7 +2,7 @@ PROGRAM:=d2q6
 CCLOCAL:=OMPI_CC=gcc-14 mpicc
 CCPROD:=mpiicx
 
-CFLAGS+= -std=c99 -Wall -Wextra -pedantic -Werror -fopenmp
+CFLAGS+= -std=c99 -Wall -Wextra -pedantic -Werror -fopenmp -O2
 LDLIBS+=-lm
 
 IMAGES=$(shell ls data/*.dat | sed s/data/imgs/g | sed s/\.dat/.png/g)
@@ -16,7 +16,7 @@ prod: d2q6.c
 	$(CCPROD) $^ $(CFLAGS) -O2 -o $(PROGRAM)
 
 run: build
-	mpirun -np 8 $(PROGRAM) -W 1200 -H 600
+	mpirun -np 8 $(PROGRAM)
 
 short: build
 	mpirun -np 4 $(PROGRAM) -I 10001
@@ -41,5 +41,3 @@ clean:
 
 purge: clean
 	-rm -r d2q6 data imgs
-
-all: clean short images anim open
