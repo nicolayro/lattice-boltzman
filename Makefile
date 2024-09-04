@@ -1,8 +1,8 @@
 PROGRAM:=d2q6
-CCLOCAL:=mpicc
+CCLOCAL:=OMPI_CC=gcc-14 mpicc
 CCPROD:=mpiicx
 
-CFLAGS+= -std=c99 -Wall -Wextra -pedantic -Werror
+CFLAGS+= -std=c99 -Wall -Wextra -pedantic -Werror -fopenmp
 LDLIBS+=-lm
 
 IMAGES=$(shell ls data/*.dat | sed s/data/imgs/g | sed s/\.dat/.png/g)
@@ -19,7 +19,7 @@ run: build
 	mpirun -np 8 $(PROGRAM) -W 1200 -H 600
 
 short: build
-	mpirun -np 8 $(PROGRAM) -I 10001
+	mpirun -np 4 $(PROGRAM) -I 10001
 
 images: ${IMAGES}
 

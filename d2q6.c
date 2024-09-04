@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <mpi.h>
+#include <omp.h>
 
 typedef double real_t;
 typedef int64_t int_t;
@@ -211,6 +212,7 @@ main ( int argc, char **argv )
 void
 collide ( void )
 {
+    #pragma omp parallel for
     for ( int_t i=1; i<=local_height; i++ )
     {
         for ( int_t j=0; j<width; j++ )
@@ -277,6 +279,7 @@ collide ( void )
 void
 stream ( void )
 {
+    #pragma omp parallel for
     for ( int_t i=0; i<local_height+2; i++ )
     {
         for ( int_t j=0; j<width; j++ )
@@ -323,6 +326,7 @@ void border_exchange(void)
 void
 store ( int_t iter )
 {
+    #pragma omp parallel for
     for ( int_t i=1; i<=local_height; i++ )
         for ( int_t j=0; j<width; j++ )
             V_abs(i,j) = sqrt ( V(i,j,0)*V(i,j,0) + V(i,j,1)*V(i,j,1) );
