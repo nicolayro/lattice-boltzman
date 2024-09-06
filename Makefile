@@ -2,29 +2,33 @@ PROGRAM:=d2q6
 CCLOCAL:=OMPI_CC=gcc-14 mpicc
 CCPROD:=mpiicx
 
-CFLAGS+= -std=c99 -Wall -Wextra -pedantic -Werror -fopenmp -O2
-LDLIBS+=-lm
+CFLAGS+= -std=c11 -fopenmp -Wall -Wextra -pedantic -Werror
+LDLIBS+= -lm
 
-IMAGES=$(shell ls data/*.dat | sed s/data/imgs/g | sed s/\.dat/.png/g)
+SRC=$(PROGRAM).c ppm.c
 
-.PHONY: build prod run images anim dirs clean purge all
+.PHONY: build prod run images anim dirs clean purge
 
-build: d2q6.c
+build: $(SRC)
 	$(CCLOCAL) $^ $(CFLAGS) $(LDLIBS) -o $(PROGRAM)
 
-prod: d2q6.c
-	$(CCPROD) $^ $(CFLAGS) -O2 -o $(PROGRAM)
+prod: $(SRC)
+	$(CCPROD)  $^ $(CFLAGS) $(LDLIBS) -o $(PROGRAM)
 
 run: build
-	mpirun -np 8 $(PROGRAM)
+	mpirun -np 2 $(PROGRAM) -H 800 -W 1200
 
 short: build
-	mpirun -np 4 $(PROGRAM) -I 10001
+	mpirun -np 4 $(PROGRAM) -I 10001 -H 800 -W 1200 -F 1
 
-images: ${IMAGES}
+geometry: build
+	mpirun -np 4 $(PROGRAM) -I 10001 -s 10 -W 160 -H 40 -G name.ppm
+
+images:
+	ls data | parallel -v A={.} ./plot.sh
 
 anim: images
-	ffmpeg -y -an -i imgs/%5d.png -vcodec libx264 -pix_fmt yuv420p -profile:v baseline -level 3 -r 12 vortex_shedding.mp4
+	ffmpeg -y -an -i imgs/%5d.png -vcodec libx264 -pix_fmt yuv420p -profile:v baseline -level 3 -r 24 vortex_shedding.mp4
 
 open: anim
 	open vortex_shedding.mp4
@@ -32,9 +36,6 @@ open: anim
 dirs:
 	mkdir -p data
 	mkdir -p imgs
-
-imgs/%.png: data/%.dat
-	echo "set term png size 800,600; set output \"imgs/$*.png\"; set view 0,0,1; set cbrange [0:0.6]; set palette defined (0 \"black\",12 \"cyan\", 16\"white\"); splot \"data/$*.dat\" binary matrix with pm3d" | gnuplot -
 
 clean:
 	-rm data/*.dat imgs/*.png

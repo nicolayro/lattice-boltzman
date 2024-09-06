@@ -1,4 +1,4 @@
-#define _XOPEN_SOURCE 500
+#define _XOPEN_SOURCE 600
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,8 +10,11 @@
 #include <mpi.h>
 #include <omp.h>
 
-typedef double real_t;
+#include "ppm.h"
+
 typedef int64_t int_t;
+typedef double real_t;
+
 #define INT_FMT "lld"
 #define REAL_FMT "lf"
 
@@ -23,6 +26,8 @@ int_t
     max_iter  = 40001;      /* Total number of iterations */
 bool
     quiet = false;  /* Suppresses stdio and file I/O when true */
+const char
+    *input = NULL; /* Name of input file */
 
 
 /* MPI related variables */
@@ -135,6 +140,7 @@ main ( int argc, char **argv )
     MPI_Bcast(&width, 1, MPI_INT64_T, 0, MPI_COMM_WORLD);
     MPI_Bcast(&max_iter, 1, MPI_INT64_T, 0, MPI_COMM_WORLD);
     MPI_Bcast(&snap_freq, 1, MPI_INT64_T, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&input, 1, MPI_CHAR, 0, MPI_COMM_WORLD);
 
     local_height = height / comm_size;
     local_offset = rank * local_height;
@@ -169,6 +175,7 @@ main ( int argc, char **argv )
 
     /* Set up the simulated geometry */
     initialize_domain();
+    border_exchange();
 
     /* Time integration loop */
     for ( int_t iter=0; iter<max_iter; iter++ )
@@ -251,8 +258,12 @@ collide ( void )
                     delta_N = lambda * ( D_now(i,j,d) - N_eq );
 
                     /* External force at j=1 */
-                    if ( j==1 && MAP(i,j) == FLUID )
+                    if ( j==1 && i+local_offset < height/2 && MAP(i,j) == FLUID )
                         delta_N +=
+                            (1.0/3.0) * (c[d][0]*force[0]+c[d][1]*force[1]);
+
+                    if ( j==width-2 && i+local_offset >= height/2 && MAP(i,j) == FLUID )
+                        delta_N -=
                             (1.0/3.0) * (c[d][0]*force[0]+c[d][1]*force[1]);
 
                     switch ( MAP(i,j) )
@@ -287,9 +298,11 @@ stream ( void )
             for ( int_t d=0; d<6; d++ )
             {
                 /* Compute neighbor indices, wrap around edges */
-                int_t
-                    ni = ( i-1 + offsets[(i+1)%2][d][0] + (local_height+2)) % (local_height+2),
-                    nj = ( j   + offsets[(i+1)%2][d][1] + width ) % width;
+                /*int_t*/
+                /*    ni = ( i-1 + offsets[(i+1)%2][d][0] + (local_height+2)) % (local_height+2),*/
+
+                int_t ni = i-1 + offsets[(i+1)%2][d][0];
+                int_t nj = ( j + offsets[(i+1)%2][d][1] + width ) % width;
 
                 /* Propagate present fluid density to neighbor */
                 D_now(ni+1,nj,d) = D_nxt(i,j,d);
@@ -364,12 +377,10 @@ store ( int_t iter )
     MPI_File_close(&out);
 }
 
-
 /* Configure the domain as a channel with a solid circular obstruction
  * positioned at 1/4 of its length.
  */
-void
-initialize_domain ( void )
+void initialize_default_domain(void)
 {
     int_t center[2] = { (height/2), (width/4) };
 
@@ -427,6 +438,103 @@ initialize_domain ( void )
     }
 }
 
+/* Configure domain to use the given input file or default domain
+ */
+void
+initialize_domain ( void )
+{
+    if (!input) {
+        initialize_default_domain();
+        return;
+    }
+
+    node_type_t *domain = NULL;
+    if (MPI_RANK_ROOT) {
+        int_t ih, iw;
+        struct pixel_t *image = NULL;
+
+        image_from_ppm(input, &image, &ih, &iw);
+        if (ih != height || iw != width) {
+            fprintf(stderr, "ERROR: Image size (%lld, %lld) must match domain size (%lld, %lld).\n", ih, iw, height, width);
+            exit(EXIT_FAILURE);
+        }
+
+        domain = malloc(height * width * sizeof(node_type_t));
+        for (int_t y = 0; y < height; y++) {
+            for (int_t x = 0; x < width; x++) {
+                struct pixel_t pixel = image[(ih-y-1)*iw+x];
+                int_t value = ((int_t)pixel.r + (int_t)pixel.g + (int_t)pixel.b) / 3;
+                if (value < 254) {
+                    domain[y*width+x] = SOLID;
+                } else {
+                    domain[y*width+x] = FLUID;
+                }
+            }
+        }
+        free(image);
+
+        for ( int_t i=1; i<=local_height; i++ ) {
+            for ( int_t j=0; j<width; j++ ) {
+                MAP(i, j) = domain[(i-1)*width+j];
+            }
+        }
+    }
+
+    MPI_Scatter(domain, width*local_height, MPI_INT, map+width, width*local_height, MPI_INT, 0, MPI_COMM_WORLD);
+
+    if (MPI_RANK_ROOT)
+        free(domain);
+
+    int_t rank_prev = !MPI_RANK_FIRST ? rank-1 : MPI_PROC_NULL;
+    int_t rank_next = !MPI_RANK_LAST ? rank+1 : MPI_PROC_NULL;
+
+    // Send south
+        MPI_Sendrecv(&MAP(1, 0), width, MPI_DOUBLE, rank_prev, 0,
+                     &MAP(local_height+1, 0), width, MPI_DOUBLE, rank_next, 0,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+    // Send north
+        MPI_Sendrecv(&MAP(local_height, 0), width, MPI_DOUBLE, rank_next, 1,
+                     &MAP(0, 0), width, MPI_DOUBLE, rank_prev, 1,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+    /* Check all solid points for fluid neighbors, and classify them as
+     * WALL if they have any.
+     */
+    for ( int_t i=1; i<=local_height; i++ )
+    {
+        for ( int_t j=0; j<width; j++ )
+        {
+            if ( MAP(i,j) == SOLID )
+            {
+                for ( int_t d=0; d<6; d++ )
+                {
+                    int_t ni = i-1 + offsets[((i-1)%2)][d][0];
+                    int_t nj = j   + offsets[((i-1)%2)][d][1];
+
+                    if ( MAP(ni+1,nj) == FLUID )
+                        MAP(i,j) = WALL;
+                }
+            }
+        }
+    }
+
+    /*for (int_t r = 0; r < comm_size; ++r) {*/
+    /*    MPI_Barrier(MPI_COMM_WORLD);*/
+    /*    if (r == rank) {*/
+    /*        for ( int_t i=1; i<=local_height; i++ ) {*/
+    /*            for ( int_t j=0; j<width; j++ ) {*/
+    /*                switch (MAP(i, j)) {*/
+    /*                    case FLUID: printf(" "); break;*/
+    /*                    case SOLID: printf("#"); break;*/
+    /*                    case WALL: printf("o"); break;*/
+    /*                }*/
+    /*            }*/
+    /*            printf("\n");*/
+    /*        }*/
+    /*    }*/
+    /*}*/
+}
 
 /* Command line options and usage information */
 static const char *usage =
@@ -438,13 +546,14 @@ static const char *usage =
 "    -R <integer> : Set obstruction radius (default height/20)\n"
 "    -F <real>    : Set horizontal force magnitude (default 1e-2)\n"
 "    -I <integer> : Set iteration count (default 40001)\n"
+"    -G <file>    : Set geometry from ppm file\n"
 ;
 
 void
 options ( int argc, char **argv )
 {
     int o;
-    while ( (o = getopt(argc, argv, "qhs:H:W:R:F:I:")) != -1 )
+    while ( (o = getopt(argc, argv, "qhs:H:W:R:F:I:G:")) != -1 )
     {
         switch ( o )
         {
@@ -455,6 +564,7 @@ options ( int argc, char **argv )
             case 'R': radius = (real_t)strtol ( optarg, NULL, 10 ); break;
             case 'F': force[1] = (real_t) strtod ( optarg, NULL ); break;
             case 'I': max_iter = strtol ( optarg, NULL, 10 ); break;
+            case 'G': input = optarg; break;
             case 'h':
                 fprintf ( stderr, "%s\n%s", argv[0], usage );
                 exit ( EXIT_FAILURE );
