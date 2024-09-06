@@ -4,6 +4,6 @@ file=system("echo $A")
 set term png
 set output "imgs/".file.".png"
 set view 0,0,1
-set cbrange[0:0.0002]
+set cbrange[0:0.0001]
 # set palette defined (0"black", 12"cyan", 16"white")
 splot "data/".file.".dat" binary matrix with pm3d
