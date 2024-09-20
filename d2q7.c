@@ -216,38 +216,13 @@ void collide(void)
                 }
 
                 N_eq = rho*(1.0-ALPHA)/6.0 + rho/3.0*ev + 2.0/3.0*rho*ev*ev - rho/6.0*v[i].x*v[i].y;
-                switch (sites[d]) {
-                    case FLUID:
-                        densities[1][d*i] = N_eq - densities[0][d*i];
-                        break;
-                    case WALL:
-                        densities[1][d*i] = N_eq - densities[0][d*i];
-                        break;
-                    case SOLID: break;
-                    default:
-                        assert(false && "Unknown domain type");
-                        break;
-                }
+                densities[1][d*i] = N_eq - densities[0][d*i];
             }
         }
     }
 }
 
 
-/**
- *  * • Collisions. For each lattice site, do the following:
- * 1. From the nine microscopic densities ni
- * , compute the macroscopic density
- * ρ and velocity components ux and uy.
- * 2. From these three macroscopic variables, use equation (8) to compute the
- * equilibrium number densities n
- * eq
- * i
- * .
- * 3. Update each of the nine number densities according to equation (9).
- * • Streaming. Move all the moving molecules into adjacent or diagonal lattice
- * sites, by copying the appropriate ni values.
-*/
 void stream(void)
 {
     FILE *out = fopen("out.ppm", "wr");
