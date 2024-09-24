@@ -207,7 +207,7 @@ void collide(void)
             for (int d = 1; d < DIRECTIONS; d++) {
                 rho += densities[0][d*i];
             }
-            ev = vec2_dot(e[i], v[i]);
+            ev = vec2_dot(e[i], v[i]); // TODO: This is probably wrong? Or at least v must be initialized
             for (int d = 0; d < DIRECTIONS; d++) {
                 // Boundary condition: Reflect of walls
                 if (sites[i] == WALL) {

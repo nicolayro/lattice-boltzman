@@ -42,3 +42,6 @@ clean:
 
 purge: clean
 	-rm -r d2q6 data imgs
+
+7: d2q7.c
+	$(CCLOCAL) $^ $(CFLAGS) $(LDLIBS) -o d2q7
