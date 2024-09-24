@@ -2,10 +2,13 @@ PROGRAM:=d2q6
 CCLOCAL:=OMPI_CC=gcc-14 mpicc
 CCPROD:=mpiicx
 
-CFLAGS+= -std=c11 -fopenmp -Wall -Wextra -pedantic -Werror
+CFLAGS+= -std=c11 -fopenmp -Wall -Wextra -pedantic -Werror -O2
 LDLIBS+= -lm
 
 SRC=$(PROGRAM).c ppm.c
+
+THREADS=1
+PROCS=8
 
 .PHONY: build prod run images anim dirs clean purge
 
@@ -16,13 +19,7 @@ prod: $(SRC)
 	$(CCPROD)  $^ $(CFLAGS) $(LDLIBS) -o $(PROGRAM)
 
 run: build
-	mpirun -np 2 $(PROGRAM) -H 800 -W 1200
-
-short: build
-	mpirun -np 4 $(PROGRAM) -I 10001 -H 800 -W 1200 -F 1
-
-geometry: build
-	mpirun -np 4 $(PROGRAM) -I 10001 -s 10 -W 160 -H 40 -G name.ppm
+	OMP_NUM_THREADS=$(THREADS) mpirun -np $(PROCS) $(PROGRAM)
 
 images:
 	ls data | parallel -v A={.} ./plot.sh
