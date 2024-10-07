@@ -258,12 +258,8 @@ collide ( void )
                     delta_N = lambda * ( D_now(i,j,d) - N_eq );
 
                     /* External force at j=1 */
-                    if ( j==1 && i+local_offset < height/2 && MAP(i,j) == FLUID )
+                    if ( j==1 && MAP(i,j) == FLUID )
                         delta_N +=
-                            (1.0/3.0) * (c[d][0]*force[0]+c[d][1]*force[1]);
-
-                    if ( j==width-2 && i+local_offset >= height/2 && MAP(i,j) == FLUID )
-                        delta_N -=
                             (1.0/3.0) * (c[d][0]*force[0]+c[d][1]*force[1]);
 
                     switch ( MAP(i,j) )
@@ -298,10 +294,7 @@ stream ( void )
             for ( int_t d=0; d<6; d++ )
             {
                 /* Compute neighbor indices, wrap around edges */
-                /*int_t*/
-                /*    ni = ( i-1 + offsets[(i+1)%2][d][0] + (local_height+2)) % (local_height+2),*/
-
-                int_t ni = i-1 + offsets[(i+1)%2][d][0];
+                int_t ni = ( i-1 + offsets[(i+1)%2][d][0] + (local_height+2)) % (local_height+2);
                 int_t nj = ( j + offsets[(i+1)%2][d][1] + width ) % width;
 
                 /* Propagate present fluid density to neighbor */
