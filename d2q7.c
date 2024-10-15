@@ -8,7 +8,7 @@
 #include <unistd.h>
 
 #define DIRECTIONS 6
-#define ALPHA 0.0
+#define ALPHA 1
 #define TAU 1
 
 typedef int64_t int_t;
@@ -37,7 +37,7 @@ void save(int iteration);
 
 void options(int argc, char **argv);
 
-int_t N, M;
+int_t W, H;
 int_t timesteps;
 char *input = NULL;
 
@@ -52,7 +52,6 @@ vec2 force = {
     .y = 0.00
 };
 
-
 int main(int argc, char **argv)
 {
     options(argc, argv);
@@ -60,23 +59,23 @@ int main(int argc, char **argv)
     init_domain();
 
     printf("=== Domain ===\n");
-    printf("  Width  (N)    %lld\n", N);
-    printf("  Height (M)    %lld\n", M);
+    printf("  Width  (N)    %lld\n", W);
+    printf("  Height (M)    %lld\n", H);
 
-    densities[0] = malloc((DIRECTIONS+1) * N * M * sizeof(double));
-    densities[1] = malloc((DIRECTIONS+1) * N * M * sizeof(double));
-    v = malloc(M * N * sizeof(vec2));
-    v_abs = malloc(M * N * sizeof(double));
+    densities[0] = malloc((DIRECTIONS+1) * W * H * sizeof(double));
+    densities[1] = malloc((DIRECTIONS+1) * W * H * sizeof(double));
+    v = malloc(H * W * sizeof(vec2));
+    v_abs = malloc(H * W * sizeof(double));
 
     if (!densities[0] || !densities[1] || !v || !v_abs) {
         fprintf(stderr, "ERROR: Not enough memory...\n");
         exit(EXIT_FAILURE);
     }
 
-    for (int y = 0; y < M; y++) {
-        for (int x = 0; x < N; x++) {
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
             for (int d = 0; d < DIRECTIONS+1; d++) {
-                densities[1][d*M*N+y*N+x] = densities[0][d*M*N+y*N+x] = 1.0 / (DIRECTIONS+1);
+                densities[1][d*H*W+y*W+x] = densities[0][d*H*W+y*W+x] = 1.0 / (DIRECTIONS+1);
             }
         }
     }
@@ -93,7 +92,6 @@ int main(int argc, char **argv)
         if (i % 1 == 0) {
             printf("Iteration %lld/%lld\n", i, timesteps);
             save(i/1);
-            printf("Iteration %lld/%lld stored\n", i, timesteps);
         }
     }
 
@@ -106,7 +104,7 @@ int main(int argc, char **argv)
     return EXIT_SUCCESS;
 }
 
-void init_domain()
+void init_domain(void)
 {
     FILE *file = fopen(input, "r");
     if (!file) {
@@ -174,57 +172,38 @@ void init_domain()
         exit(EXIT_FAILURE);
     }
 
-    N = width;
-    M = height;
+    W = width;
+    H = height;
 
-    sites = malloc(M * N * sizeof(uint8_t));
+    sites = malloc(H * W * sizeof(uint8_t));
     if (!sites) {
         exit(EXIT_FAILURE);
     }
 
-    for (int_t y = 0; y < M; y++) {
-        for (int_t x = 0; x < N; x++) {
-            int16_t value = geometry[3*(y*width+x)] + geometry[3*(y*width+x)+1]
-                + geometry[3*(y*width+x)+2];
+    for (int_t y = 0; y < H; y++) {
+        for (int_t x = 0; x < W; x++) {
+            int16_t value = geometry[3*(y*W+x)] + geometry[3*(y*W+x)+1]
+                + geometry[3*(y*W+x)+2];
 
-            sites[y*N+x] = value > 0 ? FLUID : SOLID;
+            sites[y*W+x] = value > 0 ? FLUID : SOLID;
         }
     }
 
     // All SOLID points that are next to FLUID points are categorized as WALL
-    for (int_t y = 0; y < M; y++ ) {
-        for (int_t x = 0; x < N; x++) {
-            if (sites[y*N+x] != SOLID)
+    for (int_t y = 0; y < H; y++ ) {
+        for (int_t x = 0; x < W; x++) {
+            if (sites[y*W+x] != SOLID)
                 continue;
 
             for (int_t i = 0; i < DIRECTIONS; i++) {
-                int_t nx = (x + OFFSETS[y%2][i][1]+N)%N;
-                int_t ny = (y + OFFSETS[y%2][i][0]+M)%M;
+                int_t ny = (y + OFFSETS[y%2][i][0]+H)%H;
+                int_t nx = (x + OFFSETS[y%2][i][1]+W)%W;
 
-                if (sites[ny*N+nx] == FLUID)
-                    sites[y*N+x] = WALL;
+                if (sites[ny*W+nx] == FLUID)
+                    sites[y*W+x] = WALL;
             }
         }
     }
-
-    FILE *output = fopen("domain.ppm", "wb");
-    fprintf(output,
-        "P2\n"
-        "# Created by GIMP version 2.10.38 PNM plug-in\n"
-        "%lld %lld\n"
-        "255\n",
-        N,
-        M
-    );
-
-    for (int y = 0; y < M; y++) {
-        for (int x = 0; x < N; x++) {
-            fprintf(output, "%d ", sites[y*N+x]*100);
-        }
-        fprintf(output, "\n");
-    }
-
-    fclose(output);
 
     free(geometry);
     fclose(file);
@@ -232,72 +211,71 @@ void init_domain()
 
 void collide(void)
 {
-    /* int    i        = 0;    // Lattice site */
-    /* double rho      = 0.0;  // Density */
-    /* double ev       = 0.0;  // Dot product of e and v; */
-    /* double N_eq     = 0.0;  // Equilibrium */
+     int    i        = 0;    // Lattice site
+     double rho      = 0.0;  // Density
+     double ev       = 0.0;  // Dot product of e and v;
+     double N_eq     = 0.0;  // Equilibrium
 
-    for (int y = 0; y < M; y++) {
-        for (int x = 0; x < N; x++) {
-            int i = y*N+x;
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            i = y*W+x;
 
             // Ignore solid sites
             if (sites[i] == SOLID)
                 continue;
 
-            double N_eq, ev;
-            double rho = 0;
+            /*rho = densities[0][6*H*W+y*W+x];*/
+            rho = 0;
             v[i].x = v[i].y = 0.0;
             if (sites[i] == FLUID) {
                 for (int d = 0; d < DIRECTIONS; d++) {
-                    rho += densities[0][d*M*N+y*N+x];
-                    v[i].x += e[d].x * densities[0][d*M*N+y*N+x];
-                    v[i].y += e[d].y * densities[0][d*M*N+y*N+x];
+                    rho += densities[0][d*H*W+y*W+x];
+                    v[i].x += e[d].x * densities[0][d*H*W+y*W+x];
+                    v[i].y += e[d].y * densities[0][d*H*W+y*W+x];
                 }
                 v[i].x /= rho;
                 v[i].y /= rho;
             }
 
             for (int d = 0; d < DIRECTIONS; d++) {
-                ev = e[d].x * v[i].x + e[d].y * v[i].y;
-
                 // Boundary condition: Reflect of walls
                 if (sites[i] == WALL) {
-                    densities[1][((d+3)%6)*M*N+y*N+x] = densities[0][d*M*N+y*N+x];
+                    densities[1][((d+3)%6)*H*W+y*W+x] = densities[0][d*H*W+y*W+x];
                     continue;
                 }
 
+                ev = e[d].x * v[i].x + e[d].y * v[i].y;
                 N_eq =
                     rho*(1.0-ALPHA)/6.0
-                    + rho/3.0*ev 
-                    + 2.0/3.0*rho*ev*ev 
-                    - rho/6.0*v[i].x*v[i].x+v[i].y*v[i].y;
+                    + rho/3.0*ev
+                    + (2.0*rho/3.0)*ev*ev
+                    - rho/6.0*(v[i].x*v[i].x+v[i].y*v[i].y);
 
-                densities[1][d*M*N+y*N+x] = densities[0][d*M*N+y*N+x] - (densities[0][d*M*N+y*N+x]-N_eq)/TAU;
+                densities[1][d*H*W+y*W+x] = densities[0][d*H*W+y*W+x] - (densities[0][d*H*W+y*W+x]-N_eq)/TAU;
 
                 // Add external force
-                if (x == 0)
-                    densities[1][d*M*N+y*N+x] += force.x * e[d].x;
-                    /* densities[1][d*M*N+y*N+x] += force.x * (3.0/2.0)*(y*(M-y))/((M/2.0)*(M/2.0)); */
+                if (x == 1)
+                    densities[1][d*H*W+y*W+x] += (1.0/3.0) * force.x * e[d].x;
             }
 
             // Central point / Rest Particle
-            /* N_eq = ALPHA*rho - rho*(v[i].x*v[i].x + v[i].y*v[i].y); */
-            /* densities[1][6*N*M+i] = densities[0][6*N*M+i] - (N_eq - densities[0][6*N*M+i])/TAU; */
+            if (sites[i] == FLUID) {
+                N_eq = ALPHA*rho - rho*(v[i].x*v[i].x + v[i].y*v[i].y);
+                densities[1][6*W*H+i] = densities[0][6*W*H+i] - (densities[0][6*W*H+i]-N_eq)/TAU;
+            }
         }
     }
 }
 
-
 void stream(void)
 {
-    for (int y = 0; y < M; y++) {
-        for (int x = 0; x < N; x++) {
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
             for (int d = 0; d < DIRECTIONS; d++) {
-                int nx = (x + OFFSETS[y%2][d][1]+N)%N;
-                int ny = (y + OFFSETS[y%2][d][0]+M)%M;
+                int ny = (y + OFFSETS[y%2][d][0]+H)%H;
+                int nx = (x + OFFSETS[y%2][d][1]+W)%W;
 
-                densities[0][d*M*N+ny*N+nx] = densities[1][d*M*N+y*N+x];
+                densities[0][d*H*W+ny*W+nx] = densities[1][d*H*W+y*W+x];
             }
         }
     }
@@ -305,9 +283,9 @@ void stream(void)
 
 void save(int iteration)
 {
-    for (int y = 0; y < M; y++) {
-        for (int x = 0; x < N; x++) {
-            int i = y * N + x;
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            int i = y * W + x;
             v_abs[i] = sqrt(v[i].x*v[i].x + v[i].y*v[i].y);
         }
     }
@@ -324,22 +302,23 @@ void save(int iteration)
     }
 
     float f;
-    f = N;
+    f = W;
     fwrite(&f, sizeof(float), 1, file);
-    for (int x = 0; x < N; x++) {
+    for (int x = 0; x < W; x++) {
         f = x;
         fwrite(&f, sizeof(float), 1, file);
     }
-    for (int y = 0; y < M; y++) {
+    for (int y = 0; y < H; y++) {
         f = y;
         fwrite(&f, sizeof(float), 1, file);
-        for (int x = 0; x < N; x++) {
-            f = v_abs[y*N+x];
+        for (int x = 0; x < W; x++) {
+            f = v_abs[y*W+x];
             fwrite(&f, sizeof(float), 1, file);
         }
     }
 
     fclose(file);
+
 }
 
 void options(int argc, char **argv)
