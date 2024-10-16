@@ -175,7 +175,7 @@ void init_domain(void)
     W = width;
     H = height;
 
-    sites = malloc(H * W * sizeof(uint8_t));
+    sites = malloc(H * W * sizeof(domain_t));
     if (!sites) {
         exit(EXIT_FAILURE);
     }
