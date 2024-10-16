@@ -8,8 +8,8 @@
 #include <unistd.h>
 
 #define DIRECTIONS 6
-#define ALPHA 1
-#define TAU 1
+#define ALPHA 0.17
+#define TAU 1.0
 
 typedef int64_t int_t;
 
@@ -66,7 +66,6 @@ int main(int argc, char **argv)
     densities[1] = malloc((DIRECTIONS+1) * W * H * sizeof(double));
     v = malloc(H * W * sizeof(vec2));
     v_abs = malloc(H * W * sizeof(double));
-
     if (!densities[0] || !densities[1] || !v || !v_abs) {
         fprintf(stderr, "ERROR: Not enough memory...\n");
         exit(EXIT_FAILURE);
@@ -75,7 +74,7 @@ int main(int argc, char **argv)
     for (int y = 0; y < H; y++) {
         for (int x = 0; x < W; x++) {
             for (int d = 0; d < DIRECTIONS+1; d++) {
-                densities[1][d*H*W+y*W+x] = densities[0][d*H*W+y*W+x] = 1.0 / (DIRECTIONS+1);
+                densities[1][d*H*W+y*W+x] = densities[0][d*H*W+y*W+x] = 1.0 / 6.0;
             }
         }
     }
@@ -89,9 +88,9 @@ int main(int argc, char **argv)
     for (int_t i = 0; i < timesteps; i++) {
         collide();
         stream();
-        if (i % 1 == 0) {
+        if (i % 100 == 0) {
             printf("Iteration %lld/%lld\n", i, timesteps);
-            save(i/1);
+            save(i/100);
         }
     }
 
@@ -190,12 +189,12 @@ void init_domain(void)
     }
 
     // All SOLID points that are next to FLUID points are categorized as WALL
-    for (int_t y = 0; y < H; y++ ) {
-        for (int_t x = 0; x < W; x++) {
+    for (int y = 0; y < H; y++ ) {
+        for (int x = 0; x < W; x++) {
             if (sites[y*W+x] != SOLID)
                 continue;
 
-            for (int_t i = 0; i < DIRECTIONS; i++) {
+            for (int i = 0; i < DIRECTIONS; i++) {
                 int_t ny = (y + OFFSETS[y%2][i][0]+H)%H;
                 int_t nx = (x + OFFSETS[y%2][i][1]+W)%W;
 
@@ -203,6 +202,15 @@ void init_domain(void)
                     sites[y*W+x] = WALL;
             }
         }
+    }
+
+    /* Bottom wall */
+    for (int x = 0; x < W; x++) {
+        sites[x] = WALL;
+    }
+    /* Top wall */
+    for (int x = 0; x < W; x++) {
+        sites[(H-1)*W+x] = WALL;
     }
 
     free(geometry);
@@ -214,18 +222,21 @@ void collide(void)
      int    i        = 0;    // Lattice site
      double rho      = 0.0;  // Density
      double ev       = 0.0;  // Dot product of e and v;
-     double N_eq     = 0.0;  // Equilibrium
+     double N_eq     = 0.0;  // Equilibrium at i
+     double delta_N  = 0.0;  // Change
 
-    for (int y = 0; y < H; y++) {
-        for (int x = 0; x < W; x++) {
+    for (int_t y = 0; y < H; y++) {
+        for (int_t x = 0; x < W; x++) {
+            assert(sites[y*W+x] == WALL || sites[y*W+x] == SOLID || sites[y*W+x] == FLUID);
+
             i = y*W+x;
-
             // Ignore solid sites
             if (sites[i] == SOLID)
                 continue;
 
             /*rho = densities[0][6*H*W+y*W+x];*/
-            rho = 0;
+
+            rho = 0.0;
             v[i].x = v[i].y = 0.0;
             if (sites[i] == FLUID) {
                 for (int d = 0; d < DIRECTIONS; d++) {
@@ -233,6 +244,7 @@ void collide(void)
                     v[i].x += e[d].x * densities[0][d*H*W+y*W+x];
                     v[i].y += e[d].y * densities[0][d*H*W+y*W+x];
                 }
+                assert(rho != 0.0);
                 v[i].x /= rho;
                 v[i].y /= rho;
             }
@@ -246,23 +258,27 @@ void collide(void)
 
                 ev = e[d].x * v[i].x + e[d].y * v[i].y;
                 N_eq =
+                    // F_eq_i
                     rho*(1.0-ALPHA)/6.0
                     + rho/3.0*ev
                     + (2.0*rho/3.0)*ev*ev
-                    - rho/6.0*(v[i].x*v[i].x+v[i].y*v[i].y);
+                    - rho/6.0*(v[i].x*v[i].x+v[i].y*v[i].y)
+                    // F_eq_0
+                    + (ALPHA*rho/6.0 - rho/6.0*(v[i].x*v[i].x + v[i].y*v[i].y));
 
-                densities[1][d*H*W+y*W+x] = densities[0][d*H*W+y*W+x] - (densities[0][d*H*W+y*W+x]-N_eq)/TAU;
-
+                delta_N = -(densities[0][d*H*W+y*W+x]-N_eq)/TAU;
                 // Add external force
                 if (x == 1)
-                    densities[1][d*H*W+y*W+x] += (1.0/3.0) * force.x * e[d].x;
+                    delta_N += (1.0/3.0) * force.x * e[d].x;
+
+                densities[1][d*H*W+y*W+x] = densities[0][d*H*W+y*W+x] + delta_N;
             }
 
             // Central point / Rest Particle
-            if (sites[i] == FLUID) {
-                N_eq = ALPHA*rho - rho*(v[i].x*v[i].x + v[i].y*v[i].y);
-                densities[1][6*W*H+i] = densities[0][6*W*H+i] - (densities[0][6*W*H+i]-N_eq)/TAU;
-            }
+            /*if (sites[i] == FLUID) {*/
+            /*    N_eq = ALPHA*rho - rho*(v[i].x*v[i].x + v[i].y*v[i].y);*/
+            /*    densities[1][6*W*H+i] = densities[0][6*W*H+i] - (densities[0][6*W*H+i]-N_eq)/TAU;*/
+            /*}*/
         }
     }
 }
