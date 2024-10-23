@@ -8,7 +8,7 @@
 #include <unistd.h>
 
 #define DIRECTIONS 6
-#define ALPHA 0.17
+#define ALPHA 0.142
 #define TAU 1.0
 
 typedef int64_t int_t;
@@ -18,10 +18,6 @@ typedef enum {
     WALL,
     FLUID
 } domain_t;
-
-typedef struct {
-    double x, y;
-} vec2;
 
 int OFFSETS[2][6][2] = {
     { {0,1}, {1,0}, {1,-1}, {0,-1}, {-1,-1}, {-1,0} }, /* Even rows */
@@ -41,16 +37,25 @@ int_t W, H;
 int_t timesteps;
 char *input = NULL;
 
-domain_t *sites = NULL;
+domain_t *lattice = NULL;
 double *densities[2] = { NULL, NULL };
-vec2 *v = NULL;
+double *v = NULL;
 double *v_abs = NULL;
-vec2 e[6];
+double e[6][2];
 
-vec2 force = {
-    .x = 0.01,
-    .y = 0.00
+double force[2] = {
+    0.00, // y
+    0.05  // x
 };
+
+#define LATTICE(i,j) lattice[(i)*W+(j)]
+
+#define D_now(i,j,d) densities[0][(d)*W*H+(i)*W+(j)]
+#define D_nxt(i,j,d) densities[1][(d)*W*H+(i)*W+(j)]
+
+#define V_y(i,j) v[2*((i)*W+(j))]
+#define V_x(i,j) v[2*((i)*W+(j))+1]
+#define V_abs(i,j) v_abs[(i)*W+(j)]
 
 int main(int argc, char **argv)
 {
@@ -58,31 +63,23 @@ int main(int argc, char **argv)
 
     init_domain();
 
-    printf("=== Domain ===\n");
-    printf("  Width  (N)    %lld\n", W);
-    printf("  Height (M)    %lld\n", H);
-
     densities[0] = malloc((DIRECTIONS+1) * W * H * sizeof(double));
     densities[1] = malloc((DIRECTIONS+1) * W * H * sizeof(double));
-    v = malloc(H * W * sizeof(vec2));
+    v = malloc(2 * H * W * sizeof(double));
     v_abs = malloc(H * W * sizeof(double));
-    if (!densities[0] || !densities[1] || !v || !v_abs) {
-        fprintf(stderr, "ERROR: Not enough memory...\n");
-        exit(EXIT_FAILURE);
-    }
 
-    for (int y = 0; y < H; y++) {
-        for (int x = 0; x < W; x++) {
+    for (int i = 0; i < H; i++) {
+        for (int j = 0; j < W; j++) {
             for (int d = 0; d < DIRECTIONS+1; d++) {
-                densities[1][d*H*W+y*W+x] = densities[0][d*H*W+y*W+x] = 1.0 / 6.0;
+                D_nxt(i,j,d) = D_now(i,j,d) = 1.0 / 7.0;
             }
         }
     }
 
     for( int_t d=0; d<DIRECTIONS; d++ )
     {
-        e[d].x = cos ( M_PI * d / 3.0 );
-        e[d].y = sin ( M_PI * d / 3.0 );
+        e[d][0] = sin ( M_PI * d / 3.0 ); // y
+        e[d][1] = cos ( M_PI * d / 3.0 ); // x
     }
 
     for (int_t i = 0; i < timesteps; i++) {
@@ -94,7 +91,7 @@ int main(int argc, char **argv)
         }
     }
 
-    free(sites);
+    free(lattice);
     free(densities[0]);
     free(densities[1]);
     free(v);
@@ -174,43 +171,44 @@ void init_domain(void)
     W = width;
     H = height;
 
-    sites = malloc(H * W * sizeof(domain_t));
-    if (!sites) {
+    lattice = malloc(H * W * sizeof(domain_t));
+    if (!lattice) {
+        fprintf(stderr, "ERROR: Not enough memory...\n");
         exit(EXIT_FAILURE);
     }
 
-    for (int_t y = 0; y < H; y++) {
-        for (int_t x = 0; x < W; x++) {
-            int16_t value = geometry[3*(y*W+x)] + geometry[3*(y*W+x)+1]
-                + geometry[3*(y*W+x)+2];
+    for (int_t i = 0; i < H; i++) {
+        for (int_t j = 0; j < W; j++) {
+            int16_t value = geometry[3*(i*W+j)] + geometry[3*(i*W+j)+1]
+                + geometry[3*(i*W+j)+2];
 
-            sites[y*W+x] = value > 0 ? FLUID : SOLID;
+            LATTICE(i,j) = value > 0 ? FLUID : SOLID;
         }
     }
 
     // All SOLID points that are next to FLUID points are categorized as WALL
-    for (int y = 0; y < H; y++ ) {
-        for (int x = 0; x < W; x++) {
-            if (sites[y*W+x] != SOLID)
+    for (int i = 0; i < H; i++ ) {
+        for (int j = 0; j < W; j++) {
+            if (LATTICE(i,j) != SOLID)
                 continue;
 
-            for (int i = 0; i < DIRECTIONS; i++) {
-                int_t ny = (y + OFFSETS[y%2][i][0]+H)%H;
-                int_t nx = (x + OFFSETS[y%2][i][1]+W)%W;
+            for (int d = 0; d < DIRECTIONS; d++) {
+                int_t ni = (i + OFFSETS[i%2][d][0]+H)%H;
+                int_t nj = (j + OFFSETS[i%2][d][1]+W)%W;
 
-                if (sites[ny*W+nx] == FLUID)
-                    sites[y*W+x] = WALL;
+                if (LATTICE(ni,nj) == FLUID)
+                    LATTICE(i,j) = WALL;
             }
         }
     }
 
     /* Bottom wall */
-    for (int x = 0; x < W; x++) {
-        sites[x] = WALL;
+    for (int j = 0; j < W; j++) {
+        LATTICE(0,j) = WALL;
     }
     /* Top wall */
-    for (int x = 0; x < W; x++) {
-        sites[(H-1)*W+x] = WALL;
+    for (int j = 0; j < W; j++) {
+        LATTICE((H-1),j) = WALL;
     }
 
     free(geometry);
@@ -219,79 +217,74 @@ void init_domain(void)
 
 void collide(void)
 {
-     int    i        = 0;    // Lattice site
      double rho      = 0.0;  // Density
      double ev       = 0.0;  // Dot product of e and v;
      double N_eq     = 0.0;  // Equilibrium at i
      double delta_N  = 0.0;  // Change
 
-    for (int_t y = 0; y < H; y++) {
-        for (int_t x = 0; x < W; x++) {
-            assert(sites[y*W+x] == WALL || sites[y*W+x] == SOLID || sites[y*W+x] == FLUID);
+    for (int_t i = 0; i < H; i++) {
+        for (int_t j = 0; j < W; j++) {
+            assert(LATTICE(i,j) == WALL || LATTICE(i,j) == SOLID || LATTICE(i,j) == FLUID);
 
-            i = y*W+x;
             // Ignore solid sites
-            if (sites[i] == SOLID)
+            if (LATTICE(i,j) == SOLID)
                 continue;
 
-            /*rho = densities[0][6*H*W+y*W+x];*/
-
-            rho = 0.0;
-            v[i].x = v[i].y = 0.0;
-            if (sites[i] == FLUID) {
+            rho = D_now(i,j,6);
+            V_x(i,j) = V_y(i,j) = 0.0;
+            if (LATTICE(i,j) == FLUID) {
                 for (int d = 0; d < DIRECTIONS; d++) {
-                    rho += densities[0][d*H*W+y*W+x];
-                    v[i].x += e[d].x * densities[0][d*H*W+y*W+x];
-                    v[i].y += e[d].y * densities[0][d*H*W+y*W+x];
+                    rho += D_now(i,j,d);
+                    V_y(i,j) += e[d][0] * D_now(i,j,d);
+                    V_x(i,j) += e[d][1] * D_now(i,j,d);
                 }
                 assert(rho != 0.0);
-                v[i].x /= rho;
-                v[i].y /= rho;
+                V_y(i,j) /= rho;
+                V_x(i,j) /= rho;
             }
 
             for (int d = 0; d < DIRECTIONS; d++) {
                 // Boundary condition: Reflect of walls
-                if (sites[i] == WALL) {
-                    densities[1][((d+3)%6)*H*W+y*W+x] = densities[0][d*H*W+y*W+x];
+                if (LATTICE(i,j) == WALL) {
+                    D_nxt(i,j,(d+3)%6) = D_now(i,j,d);
                     continue;
                 }
 
-                ev = e[d].x * v[i].x + e[d].y * v[i].y;
+                ev = e[d][1] * V_x(i,j) + e[d][0] * V_y(i,j);
                 N_eq =
                     // F_eq_i
                     rho*(1.0-ALPHA)/6.0
                     + rho/3.0*ev
                     + (2.0*rho/3.0)*ev*ev
-                    - rho/6.0*(v[i].x*v[i].x+v[i].y*v[i].y)
+                    - rho/6.0*(V_x(i,j)*V_x(i,j)+V_y(i,j)*V_y(i,j))
                     // F_eq_0
-                    + (ALPHA*rho/6.0 - rho/6.0*(v[i].x*v[i].x + v[i].y*v[i].y));
+                    + (ALPHA*rho/6.0 - rho/6.0*(V_x(i,j)*V_x(i,j) + V_y(i,j)*V_y(i,j)));
 
-                delta_N = -(densities[0][d*H*W+y*W+x]-N_eq)/TAU;
+                delta_N = -(D_now(i,j,d)-N_eq)/TAU;
                 // Add external force
-                if (x == 1)
-                    delta_N += (1.0/3.0) * force.x * e[d].x;
+                if (j == 1)
+                    delta_N += (1.0/3.0) * force[1] * e[d][1];
 
-                densities[1][d*H*W+y*W+x] = densities[0][d*H*W+y*W+x] + delta_N;
+                D_nxt(i,j,d) = D_now(i,j,d) + delta_N;
             }
 
-            // Central point / Rest Particle
-            /*if (sites[i] == FLUID) {*/
-            /*    N_eq = ALPHA*rho - rho*(v[i].x*v[i].x + v[i].y*v[i].y);*/
-            /*    densities[1][6*W*H+i] = densities[0][6*W*H+i] - (densities[0][6*W*H+i]-N_eq)/TAU;*/
-            /*}*/
+            if (LATTICE(i,j) == FLUID) {
+                N_eq = ALPHA*rho - rho*(V_x(i,j)*V_x(i,j) + V_y(i,j)*V_y(i,j));
+                D_nxt(i,j,6) = D_now(i,j,6) - (D_now(i,j,6)-N_eq)/TAU;
+            }
         }
     }
 }
 
 void stream(void)
 {
-    for (int y = 0; y < H; y++) {
-        for (int x = 0; x < W; x++) {
+    for (int i = 0; i < H; i++) {
+        for (int j = 0; j < W; j++) {
             for (int d = 0; d < DIRECTIONS; d++) {
-                int ny = (y + OFFSETS[y%2][d][0]+H)%H;
-                int nx = (x + OFFSETS[y%2][d][1]+W)%W;
+                int ni = (i + OFFSETS[i%2][d][0]+H)%H;
+                int nj = (j + OFFSETS[i%2][d][1]+W)%W;
 
-                densities[0][d*H*W+ny*W+nx] = densities[1][d*H*W+y*W+x];
+                D_now(ni,nj,d) = D_nxt(i,j,d);
             }
         }
     }
@@ -299,10 +292,9 @@ void stream(void)
 
 void save(int iteration)
 {
-    for (int y = 0; y < H; y++) {
-        for (int x = 0; x < W; x++) {
-            int i = y * W + x;
-            v_abs[i] = sqrt(v[i].x*v[i].x + v[i].y*v[i].y);
+    for (int i = 0; i < H; i++) {
+        for (int j = 0; j < W; j++) {
+            V_abs(i,j) = sqrt(V_x(i,j)*V_x(i,j) + V_y(i,j)*V_y(i,j));
         }
     }
 
@@ -324,11 +316,11 @@ void save(int iteration)
         f = x;
         fwrite(&f, sizeof(float), 1, file);
     }
-    for (int y = 0; y < H; y++) {
-        f = y;
+    for (int i = 0; i < H; i++) {
+        f = i;
         fwrite(&f, sizeof(float), 1, file);
-        for (int x = 0; x < W; x++) {
-            f = v_abs[y*W+x];
+        for (int j = 0; j < W; j++) {
+            f = V_abs(i,j);
             fwrite(&f, sizeof(float), 1, file);
         }
     }
