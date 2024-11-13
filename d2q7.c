@@ -7,6 +7,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <mpi.h>
+
 #define DIRECTIONS 6
 #define ALPHA 0.142
 #define TAU 1.0
@@ -24,28 +26,33 @@ int OFFSETS[2][6][2] = {
     { {0,1}, {1,1}, { 1,0}, {0,-1}, {-1, 0}, {-1,1} }  /* Odd rows */
 };
 
-
-void init_domain(void);
-void collide(void);
-void stream(void);
+void init_domain(void);     // Initialize domain geometry from input file
+void init_cart_grid(void);  // Initialize MPI cartesian grid
+void collide(void);         // Collision step
+void border_exchange(void); // MPI border exchange
+void stream(void);          // Streaming step
 
 void save(int iteration);
 
 void options(int argc, char **argv);
 
-int_t W, H;
-int_t timesteps;
-char *input = NULL;
+char *input = NULL; // Input file (in raw .ppm format)
 
-domain_t *lattice = NULL;
-double *densities[2] = { NULL, NULL };
-double *v = NULL;
-double *v_abs = NULL;
-double e[6][2];
+int_t W, H;      // Width and height of domain
+int_t timesteps; // Number of timesteps in simulation
+
+domain_t *lattice = NULL; // Domain geometry
+double *densities[2] = {
+    NULL,                 // Densities in current timestep
+    NULL                  // Densities in next timestep
+};
+double *v = NULL;         // Velocities
+double *v_abs = NULL;     // Absolute velocities
+double e[6][2];           // Directinal vectors
 
 double force[2] = {
-    0.00, // y
-    0.05  // x
+    0.00, // External force in y direction
+    0.05  // External force in x direction
 };
 
 #define LATTICE(i,j) lattice[(i)*W+(j)]
@@ -57,34 +64,63 @@ double force[2] = {
 #define V_x(i,j) v[2*((i)*W+(j))+1]
 #define V_abs(i,j) v_abs[(i)*W+(j)]
 
+/* MPI */
+
+int rank; // MPI rank
+int comm_size; // Total number of ranks
+
+typedef enum { NORTH, EAST, SOUTH, WEST } Direction;
+MPI_Comm comm_cart; // Cartesian communicator
+int dims[2];        // Dimensions of cartesian grid [y, x]
+int cart_pos[2];    // Position in cartesian grid   [y, x]
+int cart_nbo[4];    // Neighbors in grid            [N, E, S, W]
+MPI_Datatype subgrid;
+
+int local_H, local_W, local_x_offsett;
+
+#define MPI_RANK_ROOT 0
+
 int main(int argc, char **argv)
 {
-    options(argc, argv);
+    MPI_Init(&argc, &argv);
 
-    init_domain();
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &comm_size);
 
-    densities[0] = malloc((DIRECTIONS+1) * W * H * sizeof(double));
-    densities[1] = malloc((DIRECTIONS+1) * W * H * sizeof(double));
-    v = malloc(2 * H * W * sizeof(double));
-    v_abs = malloc(H * W * sizeof(double));
+    if (rank == MPI_RANK_ROOT) {
+        options(argc, argv);
+        init_domain();
+    }
 
-    for (int i = 0; i < H; i++) {
-        for (int j = 0; j < W; j++) {
-            for (int d = 0; d < DIRECTIONS+1; d++) {
+    MPI_Bcast(&W, 1, MPI_INT, MPI_RANK_ROOT, MPI_COMM_WORLD);
+    MPI_Bcast(&H, 1, MPI_INT, MPI_RANK_ROOT, MPI_COMM_WORLD);
+    MPI_Bcast(&timesteps, 1, MPI_INT, MPI_RANK_ROOT, MPI_COMM_WORLD);
+
+    init_cart_grid();
+
+    densities[0] = malloc(7 * (local_W+2) * (local_H+2) * sizeof(double));
+    densities[1] = malloc(7 * (local_W+2) * (local_H+2) * sizeof(double));
+    v = malloc(2 * local_H * local_W * sizeof(double));
+    v_abs = malloc(local_H * local_W * sizeof(double));
+
+    for (int i = 0; i < local_H+2; i++) {
+        for (int j = 0; j < local_W+2; j++) {
+            for (int d = 0; d < 7; d++) {
                 D_nxt(i,j,d) = D_now(i,j,d) = 1.0 / 7.0;
             }
         }
     }
 
-    for( int_t d=0; d<DIRECTIONS; d++ )
-    {
-        e[d][0] = sin ( M_PI * d / 3.0 ); // y
-        e[d][1] = cos ( M_PI * d / 3.0 ); // x
+    for(int_t d=0; d<6; d++) {
+        e[d][0] = sin(M_PI * d / 3.0); // y
+        e[d][1] = cos(M_PI * d / 3.0); // x
     }
 
     for (int_t i = 0; i < timesteps; i++) {
         collide();
+        border_exchange();
         stream();
+
         if (i % 100 == 0) {
             printf("Iteration %lld/%lld\n", i, timesteps);
             save(i/100);
@@ -97,7 +133,26 @@ int main(int argc, char **argv)
     free(v);
     free(v_abs);
 
+    MPI_Finalize();
+
     return EXIT_SUCCESS;
+}
+
+void init_cart_grid(void) {
+    int periods[2] = { 0, 0 };
+
+    MPI_Dims_create(comm_size, 2, dims);
+    MPI_Cart_create(MPI_COMM_WORLD, 2, dims, periods, 0, &comm_cart);
+
+    MPI_Cart_coords(comm_cart, rank, 2, cart_pos);
+
+    MPI_Cart_shift(comm_cart, 1, 1, &cart_nbo[WEST], &cart_nbo[EAST]);
+    MPI_Cart_shift(comm_cart, 0, 1, &cart_nbo[SOUTH], &cart_nbo[NORTH]);
+
+    local_H = H / dims[1];
+    local_W = W / dims[0];
+
+    // TODO: Offsets?
 }
 
 void init_domain(void)
@@ -171,8 +226,8 @@ void init_domain(void)
     W = width;
     H = height;
 
-    lattice = malloc(H * W * sizeof(domain_t));
-    if (!lattice) {
+    domain_t *domain = malloc(H * W * sizeof(domain_t));
+    if (!domain) {
         fprintf(stderr, "ERROR: Not enough memory...\n");
         exit(EXIT_FAILURE);
     }
@@ -182,34 +237,42 @@ void init_domain(void)
             int16_t value = geometry[3*(i*W+j)] + geometry[3*(i*W+j)+1]
                 + geometry[3*(i*W+j)+2];
 
-            LATTICE(i,j) = value > 0 ? FLUID : SOLID;
+            domain[i*W+j] = value > 0 ? FLUID : SOLID;
         }
     }
 
     // All SOLID points that are next to FLUID points are categorized as WALL
     for (int i = 0; i < H; i++ ) {
         for (int j = 0; j < W; j++) {
-            if (LATTICE(i,j) != SOLID)
+            if (domain[i*W+j] != SOLID)
                 continue;
 
             for (int d = 0; d < DIRECTIONS; d++) {
                 int_t ni = (i + OFFSETS[i%2][d][0]+H)%H;
                 int_t nj = (j + OFFSETS[i%2][d][1]+W)%W;
 
-                if (LATTICE(ni,nj) == FLUID)
-                    LATTICE(i,j) = WALL;
+                if (domain[ni*W+nj] == FLUID)
+                    domain[i*W+j] = WALL;
             }
         }
     }
 
     /* Bottom wall */
     for (int j = 0; j < W; j++) {
-        LATTICE(0,j) = WALL;
+        domain[j] = WALL;
     }
     /* Top wall */
     for (int j = 0; j < W; j++) {
-        LATTICE((H-1),j) = WALL;
+        domain[(H-1)*W+j] = WALL;
     }
+
+    int start[2] = { 0, 0 };
+    int subgrid_size[2] = { local_H, local_W };
+    int grid_size[2] = { H, W };
+    MPI_Type_create_subarray(2, grid_size, subgrid_size, start, MPI_ORDER_C, MPI_INT, &subgrid);
+    MPI_Type_commit(&subgrid);
+
+    MPI_Scatter(domain, 1, subgrid, lattice+local_W, local_W*local_H, MPI_INT, MPI_RANK_ROOT, comm_cart);
 
     free(geometry);
     fclose(file);

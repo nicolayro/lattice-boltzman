@@ -19,7 +19,7 @@ prod: $(SRC)
 	$(CCPROD)  $^ $(CFLAGS) $(LDLIBS) -o $(PROGRAM)
 
 run: build
-	OMP_NUM_THREADS=$(THREADS) mpirun -np $(PROCS) $(PROGRAM)
+	OMP_NUM_THREADS=$(THREADS) mpirun -np $(PROCS) $(PROGRAM) -I 1000 -s 1 -G assets/circle.ppm
 
 images:
 	ls data | parallel -v A={.} ./plot.sh
