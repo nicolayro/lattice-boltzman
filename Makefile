@@ -8,7 +8,7 @@ LDLIBS+= -lm
 SRC=$(PROGRAM).c ppm.c
 
 THREADS=1
-PROCS=8
+PROCS=4
 
 .PHONY: build prod run images anim dirs clean purge
 
@@ -42,3 +42,6 @@ purge: clean
 
 7: d2q7.c
 	$(CCLOCAL) $^ $(CFLAGS) $(LDLIBS) -o d2q7
+
+run_d2q7: 7
+	mpirun -np $(PROCS) d2q7 -i 10 assets/circle.ppm
