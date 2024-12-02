@@ -9,8 +9,8 @@
 
 #include <mpi.h>
 
-#define DIRECTIONS 6
-#define ALPHA 0.5
+#define DIRECTIONS 7
+#define ALPHA 0.50
 #define TAU 1.0
 
 typedef int64_t int_t;
@@ -21,7 +21,7 @@ typedef enum {
     FLUID
 } domain_t;
 
-int OFFSETS[2][7][2] = {
+int OFFSETS[2][DIRECTIONS][2] = {
     { {0,1}, {1,0}, {1,-1}, {0,-1}, {-1,-1}, {-1,0}, {0,0} }, /* Even rows */
     { {0,1}, {1,1}, { 1,0}, {0,-1}, {-1, 0}, {-1,1}, {0,0} }  /* Odd rows */
 };
@@ -48,11 +48,11 @@ double *densities[2] = {
     NULL                  // Densities in next timestep
 };
 double *v = NULL;         // Velocities
-double e[7][2];           // Directinal vectors
+double e[DIRECTIONS][2];           // Directinal vectors
 
 double force[2] = {
     0.00, // External force in y direction
-    0.001  // External force in x direction
+    0.02  // External force in x direction
 };
 
 float *outbuf = NULL; // Output buffer (Note that this is a float)
@@ -184,7 +184,7 @@ int main(int argc, char **argv)
 
     for (int i = 0; i < local_H+2; i++) {
         for (int j = 0; j < local_W+2; j++) {
-            for (int d = 0; d < 6; d++) {
+            for (int d = 0; d < DIRECTIONS; d++) {
                 D_nxt(i,j,d) = D_now(i,j,d) = 1.0 / 7.0;
             }
         }
@@ -326,7 +326,7 @@ void init_domain(void)
             if (domain[i*W+j] != SOLID)
                 continue;
 
-            for (int d = 0; d < DIRECTIONS; d++) {
+            for (int d = 0; d < DIRECTIONS-1; d++) {
                 int_t ni = (i + OFFSETS[i%2][d][0]+H)%H;
                 int_t nj = (j + OFFSETS[i%2][d][1]+W)%W;
 
@@ -408,7 +408,7 @@ void collide(void)
             rho = 0;
             V_x(i,j) = V_y(i,j) = 0.0;
             if (LATTICE(i,j) == FLUID) {
-                for (int d = 0; d < DIRECTIONS+1; d++) {
+                for (int d = 0; d < DIRECTIONS; d++) {
                     rho += D_now(i,j,d);
                     V_y(i,j) += e[d][0] * D_now(i,j,d);
                     V_x(i,j) += e[d][1] * D_now(i,j,d);
@@ -418,7 +418,7 @@ void collide(void)
                 V_x(i,j) /= rho;
             }
 
-            for (int d = 0; d < DIRECTIONS+1; d++) {
+            for (int d = 0; d < DIRECTIONS; d++) {
                 // Boundary condition: Reflect of walls
                 if (d != 6 && LATTICE(i,j) == WALL) {
                     D_nxt(i,j,(d+3)%6) = D_now(i,j,d);
@@ -426,14 +426,18 @@ void collide(void)
                 }
 
                 ev = e[d][1] * V_x(i,j) + e[d][0] * V_y(i,j);
-                N_eq =
-                    // F_eq_i
-                    rho*(1.0-ALPHA)/6.0
-                    + rho/3.0*ev
-                    + (2.0*rho/3.0)*ev*ev
-                    - rho/6.0*(V_x(i,j)*V_x(i,j)+V_y(i,j)*V_y(i,j))
-                    // F_eq_0
-                    + (ALPHA*rho/6.0 - rho/6.0*(V_x(i,j)*V_x(i,j) + V_y(i,j)*V_y(i,j)));
+                if (d != 6) {
+                    N_eq =
+                        // F_eq_i
+                        rho*(1.0-ALPHA)/6.0
+                        + rho/3.0*ev
+                        + (2.0*rho/3.0)*ev*ev
+                        - rho/6.0*(V_x(i,j)*V_x(i,j)+V_y(i,j)*V_y(i,j));
+                        // F_eq_0
+                        /*+ (ALPHA*rho/6.0 - rho/6.0*(V_x(i,j)*V_x(i,j) + V_y(i,j)*V_y(i,j)));*/
+                } else {
+                    N_eq = (ALPHA*rho - rho*(V_x(i,j)*V_x(i,j) + V_y(i,j)*V_y(i,j)));
+                }
 
                 delta_N = -(D_now(i,j,d)-N_eq)/TAU;
 
@@ -450,7 +454,7 @@ void stream(void)
 {
     for (int i = 0; i < local_H+2; i++) {
         for (int j = 0; j < local_W+2; j++) {
-            for (int d = 0; d < DIRECTIONS+1; d++) {
+            for (int d = 0; d < DIRECTIONS; d++) {
                 int ni = (i + OFFSETS[i%2][d][0]+(local_H+2))%(local_H+2);
                 int nj = (j + OFFSETS[i%2][d][1]+(local_W+2))%(local_W+2);
 
