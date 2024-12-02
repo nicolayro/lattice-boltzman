@@ -3,7 +3,9 @@
 file=system("echo $A")
 set term png size 600, 400
 set output "imgs/".file.".png"
-set view 0,0,1
-set cbrange[0:0.0006]
-set palette defined (0"black", 12"cyan", 16"white")
-splot "data/".file.".dat" binary matrix with pm3d
+
+set view map
+set cbrange[0:0.6]
+set xrange[0:600]
+set yrange[0:400]
+plot "data/".file.".dat" binary array=600x400 format="%f" with image

@@ -44,4 +44,4 @@ purge: clean
 	$(CCLOCAL) $^ $(CFLAGS) $(LDLIBS) -o d2q7
 
 run_d2q7: 7
-	mpirun -np $(PROCS) d2q7 -i 10 assets/circle.ppm
+	mpirun -np $(PROCS) d2q7 -i 10000 assets/circle.ppm
