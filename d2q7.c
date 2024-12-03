@@ -27,7 +27,9 @@ int OFFSETS[2][DIRECTIONS][2] = {
 };
 
 void init_domain(void);     // Initialize domain geometry from input file
-void init_types(void);  // Initialize MPI cartesian grid
+void init_cart_grid(void);       // Initialize MPI Cartesian grid
+void init_types(void);      // Initialize MPI Custom datatypes
+void scatter_domain(void);
 void collide(void);         // Collision step
 void border_exchange(void); // MPI border exchange
 void stream(void);          // Streaming step
@@ -81,6 +83,7 @@ MPI_Datatype subgrid;
 
 int local_H, local_W, local_x_offsett;
 
+
 #define MPI_RANK_ROOT 0
 
 int main(int argc, char **argv)
@@ -100,87 +103,15 @@ int main(int argc, char **argv)
     MPI_Bcast(&H, 1, MPI_INT, MPI_RANK_ROOT, MPI_COMM_WORLD);
     MPI_Bcast(&timesteps, 1, MPI_INT, MPI_RANK_ROOT, MPI_COMM_WORLD);
 
-    int periods[2] = { 0, 1 };
-    MPI_Dims_create(comm_size, 2, dims);
-    MPI_Cart_create(MPI_COMM_WORLD, 2, dims, periods, 0, &comm_cart);
-    MPI_Cart_coords(comm_cart, rank, 2, cart_pos);
-    MPI_Cart_shift(comm_cart, 0, 1, &cart_nbo[SOUTH], &cart_nbo[NORTH]);
-    MPI_Cart_shift(comm_cart, 1, 1, &cart_nbo[WEST], &cart_nbo[EAST]);
+    init_cart_grid();
 
-    local_H = H / dims[0];
-    local_W = W / dims[1];
     lattice = calloc((local_W+2) * (local_H+2), sizeof(domain_t));
     densities[0] = malloc(7 * (local_W+2) * (local_H+2) * sizeof(double));
     densities[1] = malloc(7 * (local_W+2) * (local_H+2) * sizeof(double));
     v = malloc(2 * (local_H+2) * (local_W+2) * sizeof(double));
     outbuf = malloc((local_H) * (local_W) * sizeof(float));
 
-    if (rank == MPI_RANK_ROOT) {
-        // Scatter to others
-        for (int i = 0; i < dims[0]; i++) {
-            for (int j = 0; j < dims[1]; j++) {
-                if (i*dims[1]+j==MPI_RANK_ROOT)
-                    continue;
-
-                MPI_Datatype map_subgrid;
-
-                int start[2] = { i*local_H, j*local_W };
-                int subgrid_size[2] = { local_H, local_W };
-                int grid_size[2] = { H, W };
-
-                MPI_Type_create_subarray(2, grid_size, subgrid_size, start, MPI_ORDER_C, MPI_INT32_T, &map_subgrid);
-                MPI_Type_commit(&map_subgrid);
-
-                MPI_Send(domain, 1, map_subgrid, i*dims[1]+j, 1, comm_cart);
-
-                MPI_Type_free(&map_subgrid);
-            }
-        }
-
-        for (int i = 0; i < local_H+2; i++) {
-            for (int j = 0; j < local_W+2; j++) {
-                LATTICE(i,j) = domain[i*W+j];
-            }
-        }
-
-        free(domain);
-    } else {
-        MPI_Datatype local_grid;
-        MPI_Type_vector(local_H, local_W, local_W+2, MPI_INT32_T, &local_grid);
-        MPI_Type_commit(&local_grid);
-        MPI_Recv(&LATTICE(1,1), 1, local_grid, MPI_RANK_ROOT, 1, comm_cart, MPI_STATUS_IGNORE);
-        MPI_Type_free(&local_grid);
-    }
-
-    MPI_Datatype column, row;
-    MPI_Type_vector(local_H+2, 1, local_W + 2, MPI_INT32_T, &column);
-    MPI_Type_vector(1, local_W+2, local_W + 2, MPI_INT32_T, &row);
-
-    MPI_Type_commit (&column);
-    MPI_Type_commit (&row);
-
-    // Send north
-    MPI_Sendrecv(&LATTICE(1, 0), 1, row, cart_nbo[NORTH], 1,
-                 &LATTICE(local_H+1, 0), 1, row, cart_nbo[SOUTH], 1,
-                 comm_cart, MPI_STATUS_IGNORE);
-
-    // Send south
-    MPI_Sendrecv(&LATTICE(local_H, 0), 1, row, cart_nbo[SOUTH], 1,
-                 &LATTICE(0, 0), 1, row, cart_nbo[NORTH], 1,
-                 comm_cart, MPI_STATUS_IGNORE);
-
-    // Send west
-    MPI_Sendrecv(&LATTICE(0, 1), 1, column, cart_nbo[WEST], 1,
-                 &LATTICE(0, local_W+1), 1, column, cart_nbo[EAST], 1,
-                 comm_cart, MPI_STATUS_IGNORE);
-
-    // Send east
-    MPI_Sendrecv(&LATTICE(0, local_W), 1, column, cart_nbo[EAST], 1,
-                 &LATTICE(0, 0), 1, column, cart_nbo[WEST], 1,
-                 comm_cart, MPI_STATUS_IGNORE);
-
-    MPI_Type_free(&column);
-    MPI_Type_free(&row);
+    scatter_domain();
 
     for (int i = 0; i < local_H+2; i++) {
         for (int j = 0; j < local_W+2; j++) {
@@ -199,8 +130,6 @@ int main(int argc, char **argv)
 
 
     init_types();
-
-    printf("[%d] (%d, %d)\n", rank, local_H, local_W);
 
     for (int_t i = 0; i < timesteps; i++) {
         collide();
@@ -225,7 +154,21 @@ int main(int argc, char **argv)
     return EXIT_SUCCESS;
 }
 
-void init_types(void) {
+void init_cart_grid(void)
+{
+    int periods[2] = { 1, 1 };
+    MPI_Dims_create(comm_size, 2, dims);
+    MPI_Cart_create(MPI_COMM_WORLD, 2, dims, periods, 0, &comm_cart);
+    MPI_Cart_coords(comm_cart, rank, 2, cart_pos);
+    MPI_Cart_shift(comm_cart, 0, 1, &cart_nbo[SOUTH], &cart_nbo[NORTH]);
+    MPI_Cart_shift(comm_cart, 1, 1, &cart_nbo[WEST], &cart_nbo[EAST]);
+
+    local_H = H / dims[0];
+    local_W = W / dims[1];
+}
+
+void init_types(void)
+{
     int start[2] = { cart_pos[0]*local_H, cart_pos[1]*local_W };
     int subgrid_size[2] = { local_H, local_W };
     int grid_size[2] = { H, W };
@@ -349,6 +292,77 @@ void init_domain(void)
     fclose(file);
 }
 
+void scatter_domain(void)
+{
+    if (rank == MPI_RANK_ROOT) {
+        // Scatter to others
+        for (int i = 0; i < dims[0]; i++) {
+            for (int j = 0; j < dims[1]; j++) {
+                if (i*dims[1]+j==MPI_RANK_ROOT)
+                    continue;
+
+                MPI_Datatype map_subgrid;
+
+                int start[2] = { i*local_H, j*local_W };
+                int subgrid_size[2] = { local_H, local_W };
+                int grid_size[2] = { H, W };
+
+                MPI_Type_create_subarray(2, grid_size, subgrid_size, start, MPI_ORDER_C, MPI_INT32_T, &map_subgrid);
+                MPI_Type_commit(&map_subgrid);
+
+                MPI_Send(domain, 1, map_subgrid, i*dims[1]+j, 1, comm_cart);
+
+                MPI_Type_free(&map_subgrid);
+            }
+        }
+
+        for (int i = 0; i < local_H+2; i++) {
+            for (int j = 0; j < local_W+2; j++) {
+                LATTICE(i,j) = domain[i*W+j];
+            }
+        }
+
+        free(domain);
+    } else {
+        MPI_Datatype local_grid;
+        MPI_Type_vector(local_H, local_W, local_W+2, MPI_INT32_T, &local_grid);
+        MPI_Type_commit(&local_grid);
+        MPI_Recv(&LATTICE(1,1), 1, local_grid, MPI_RANK_ROOT, 1, comm_cart, MPI_STATUS_IGNORE);
+        MPI_Type_free(&local_grid);
+    }
+
+    MPI_Datatype column, row;
+    MPI_Type_vector(local_H+2, 1, local_W + 2, MPI_INT32_T, &column);
+    MPI_Type_vector(1, local_W+2, local_W + 2, MPI_INT32_T, &row);
+
+    MPI_Type_commit (&column);
+    MPI_Type_commit (&row);
+
+    // Send north
+    MPI_Sendrecv(&LATTICE(1, 0), 1, row, cart_nbo[NORTH], 1,
+                 &LATTICE(local_H+1, 0), 1, row, cart_nbo[SOUTH], 1,
+                 comm_cart, MPI_STATUS_IGNORE);
+
+    // Send south
+    MPI_Sendrecv(&LATTICE(local_H, 0), 1, row, cart_nbo[SOUTH], 1,
+                 &LATTICE(0, 0), 1, row, cart_nbo[NORTH], 1,
+                 comm_cart, MPI_STATUS_IGNORE);
+
+    // Send west
+    MPI_Sendrecv(&LATTICE(0, 1), 1, column, cart_nbo[WEST], 1,
+                 &LATTICE(0, local_W+1), 1, column, cart_nbo[EAST], 1,
+                 comm_cart, MPI_STATUS_IGNORE);
+
+    // Send east
+    MPI_Sendrecv(&LATTICE(0, local_W), 1, column, cart_nbo[EAST], 1,
+                 &LATTICE(0, 0), 1, column, cart_nbo[WEST], 1,
+                 comm_cart, MPI_STATUS_IGNORE);
+
+    MPI_Type_free(&column);
+    MPI_Type_free(&row);
+}
+
+
 void border_exchange(void) {
     // Setup column and row datatypes for easier border exchange
     MPI_Datatype column, row;
@@ -455,8 +469,11 @@ void stream(void)
     for (int i = 0; i < local_H+2; i++) {
         for (int j = 0; j < local_W+2; j++) {
             for (int d = 0; d < DIRECTIONS; d++) {
-                int ni = (i + OFFSETS[i%2][d][0]+(local_H+2))%(local_H+2);
-                int nj = (j + OFFSETS[i%2][d][1]+(local_W+2))%(local_W+2);
+                int ni = (i + OFFSETS[i%2][d][0]);
+                int nj = (j + OFFSETS[i%2][d][1]);
+
+                if (ni < 0 || ni >= local_H+2 || nj < 0 || nj >= local_W+2)
+                    continue;
 
                 D_now(ni,nj,d) = D_nxt(i,j,d);
             }

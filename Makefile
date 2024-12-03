@@ -8,7 +8,7 @@ LDLIBS+= -lm
 SRC=$(PROGRAM).c ppm.c
 
 THREADS=1
-PROCS=1
+PROCS=4
 
 .PHONY: build prod run images anim dirs clean purge
 
