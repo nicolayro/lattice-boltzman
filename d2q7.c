@@ -129,19 +129,53 @@ int main(int argc, char **argv)
     e[6][0] = 0.0;
     e[6][1] = 0.0;
 
-
     init_types();
 
+    double start_time, end_time, begin_time, collide_time, exchange_time, stream_time;
+    double collide_total = 0, exchange_total = 0, stream_total = 0;
+
+    start_time = MPI_Wtime();
+
     for (int_t i = 0; i < timesteps; i++) {
+        begin_time = MPI_Wtime();
         collide();
+        collide_time = MPI_Wtime();
         border_exchange();
+        exchange_time = MPI_Wtime();
         stream();
+        stream_time = MPI_Wtime();
+
+        collide_total += collide_time - begin_time;
+        exchange_total += exchange_time - collide_time;
+        stream_total += stream_time - exchange_time;
+
 
         if (i % 100 == 0) {
             if (rank == MPI_RANK_ROOT)
                 printf("Iteration %lld/%lld\n", i, timesteps);
             save(i/100);
         }
+    }
+
+    end_time = MPI_Wtime();
+
+    double r_start_time, r_end_time, r_collide_total, r_exchange_total, r_stream_total;
+    MPI_Reduce(&start_time, &r_start_time, 1, MPI_DOUBLE, MPI_SUM, MPI_RANK_ROOT, comm_cart);
+    MPI_Reduce(&end_time, &r_end_time, 1, MPI_DOUBLE, MPI_SUM, MPI_RANK_ROOT, comm_cart);
+    MPI_Reduce(&collide_total, &r_collide_total, 1, MPI_DOUBLE, MPI_SUM, MPI_RANK_ROOT, comm_cart);
+    MPI_Reduce(&exchange_total, &r_exchange_total, 1, MPI_DOUBLE, MPI_SUM, MPI_RANK_ROOT, comm_cart);
+    MPI_Reduce(&stream_total, &r_stream_total, 1, MPI_DOUBLE, MPI_SUM, MPI_RANK_ROOT, comm_cart);
+
+    if (rank == MPI_RANK_ROOT) {
+        printf("==== Results ====\n");
+        printf("Height          400 \n");
+        printf("Width           600 \n");
+        printf("Ranks             %d\n", comm_size);
+        printf("Iterations        %lld\n", timesteps);
+        printf("Elapsed time (s)  %lf\n", r_end_time - r_start_time);
+        printf("    Collision     %lf\n", r_collide_total);
+        printf("    Exchange      %lf\n", r_exchange_total);
+        printf("    Streaming     %lf\n", r_stream_total);
     }
 
     MPI_Type_free(&column);
