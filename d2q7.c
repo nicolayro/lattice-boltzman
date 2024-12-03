@@ -10,7 +10,7 @@
 #include <mpi.h>
 
 #define DIRECTIONS 7
-#define ALPHA 0.50
+#define ALPHA 0.5
 #define TAU 1.0
 
 typedef int64_t int_t;
@@ -22,8 +22,8 @@ typedef enum {
 } domain_t;
 
 int OFFSETS[2][DIRECTIONS][2] = {
-    { {0,1}, {1,0}, {1,-1}, {0,-1}, {-1,-1}, {-1,0}, {0,0} }, /* Even rows */
-    { {0,1}, {1,1}, { 1,0}, {0,-1}, {-1, 0}, {-1,1}, {0,0} }  /* Odd rows */
+    { {0,1}, {1,1}, { 1,0}, {0,-1}, {-1, 0}, {-1,1}, {0,0} },  /* Odd rows */
+    { {0,1}, {1,0}, {1,-1}, {0,-1}, {-1,-1}, {-1,0}, {0,0} } /* Even rows */
 };
 
 void init_domain(void);     // Initialize domain geometry from input file
@@ -54,7 +54,7 @@ double e[DIRECTIONS][2];           // Directinal vectors
 
 double force[2] = {
     0.00, // External force in y direction
-    0.02  // External force in x direction
+    0.01  // External force in x direction
 };
 
 float *outbuf = NULL; // Output buffer (Note that this is a float)
@@ -79,7 +79,8 @@ MPI_Comm comm_cart; // Cartesian communicator
 int dims[2];        // Dimensions of cartesian grid [y, x]
 int cart_pos[2];    // Position in cartesian grid   [y, x]
 int cart_nbo[4];    // Neighbors in grid            [N, E, S, W]
-MPI_Datatype subgrid;
+MPI_Datatype subgrid;       // Datatype for local grid in global grid
+MPI_Datatype column, row;   // Column and row in subgrid (including halo)
 
 int local_H, local_W, local_x_offsett;
 
@@ -105,7 +106,7 @@ int main(int argc, char **argv)
 
     init_cart_grid();
 
-    lattice = calloc((local_W+2) * (local_H+2), sizeof(domain_t));
+    lattice = malloc((local_W+2) * (local_H+2) * sizeof(domain_t));
     densities[0] = malloc(7 * (local_W+2) * (local_H+2) * sizeof(double));
     densities[1] = malloc(7 * (local_W+2) * (local_H+2) * sizeof(double));
     v = malloc(2 * (local_H+2) * (local_W+2) * sizeof(double));
@@ -143,6 +144,10 @@ int main(int argc, char **argv)
         }
     }
 
+    MPI_Type_free(&column);
+    MPI_Type_free(&row);
+    MPI_Type_free(&subgrid);
+
     free(lattice);
     free(densities[0]);
     free(densities[1]);
@@ -157,10 +162,11 @@ int main(int argc, char **argv)
 void init_cart_grid(void)
 {
     int periods[2] = { 1, 1 };
+
     MPI_Dims_create(comm_size, 2, dims);
     MPI_Cart_create(MPI_COMM_WORLD, 2, dims, periods, 0, &comm_cart);
     MPI_Cart_coords(comm_cart, rank, 2, cart_pos);
-    MPI_Cart_shift(comm_cart, 0, 1, &cart_nbo[SOUTH], &cart_nbo[NORTH]);
+    MPI_Cart_shift(comm_cart, 0, 1, &cart_nbo[NORTH], &cart_nbo[SOUTH]);
     MPI_Cart_shift(comm_cart, 1, 1, &cart_nbo[WEST], &cart_nbo[EAST]);
 
     local_H = H / dims[0];
@@ -175,6 +181,13 @@ void init_types(void)
 
     MPI_Type_create_subarray(2, grid_size, subgrid_size, start, MPI_ORDER_C, MPI_FLOAT, &subgrid);
     MPI_Type_commit(&subgrid);
+
+    MPI_Type_vector(local_H+2, 1, local_W+2, MPI_DOUBLE, &column);
+    MPI_Type_vector(1, local_W+2, local_W+2, MPI_DOUBLE, &row);
+
+    MPI_Type_commit (&column);
+    MPI_Type_commit (&row);
+
 }
 
 void init_domain(void)
@@ -316,9 +329,9 @@ void scatter_domain(void)
             }
         }
 
-        for (int i = 0; i < local_H+2; i++) {
-            for (int j = 0; j < local_W+2; j++) {
-                LATTICE(i,j) = domain[i*W+j];
+        for (int i = 0; i < local_H; i++) {
+            for (int j = 0; j < local_W; j++) {
+                LATTICE(i+1,j+1) = domain[i*W+j];
             }
         }
 
@@ -331,47 +344,39 @@ void scatter_domain(void)
         MPI_Type_free(&local_grid);
     }
 
-    MPI_Datatype column, row;
-    MPI_Type_vector(local_H+2, 1, local_W + 2, MPI_INT32_T, &column);
-    MPI_Type_vector(1, local_W+2, local_W + 2, MPI_INT32_T, &row);
+    MPI_Datatype map_column, map_row;
+    MPI_Type_vector(local_H+2, 1, local_W + 2, MPI_INT32_T, &map_column);
+    MPI_Type_vector(1, local_W+2, local_W + 2, MPI_INT32_T, &map_row);
 
-    MPI_Type_commit (&column);
-    MPI_Type_commit (&row);
+    MPI_Type_commit (&map_column);
+    MPI_Type_commit (&map_row);
 
     // Send north
-    MPI_Sendrecv(&LATTICE(1, 0), 1, row, cart_nbo[NORTH], 1,
-                 &LATTICE(local_H+1, 0), 1, row, cart_nbo[SOUTH], 1,
+    MPI_Sendrecv(&LATTICE(1, 0), 1, map_row, cart_nbo[NORTH], 1,
+                 &LATTICE(local_H+1, 0), 1, map_row, cart_nbo[SOUTH], 1,
                  comm_cart, MPI_STATUS_IGNORE);
 
     // Send south
-    MPI_Sendrecv(&LATTICE(local_H, 0), 1, row, cart_nbo[SOUTH], 1,
-                 &LATTICE(0, 0), 1, row, cart_nbo[NORTH], 1,
+    MPI_Sendrecv(&LATTICE(local_H, 0), 1, map_row, cart_nbo[SOUTH], 1,
+                 &LATTICE(0, 0), 1, map_row, cart_nbo[NORTH], 1,
                  comm_cart, MPI_STATUS_IGNORE);
 
     // Send west
-    MPI_Sendrecv(&LATTICE(0, 1), 1, column, cart_nbo[WEST], 1,
-                 &LATTICE(0, local_W+1), 1, column, cart_nbo[EAST], 1,
+    MPI_Sendrecv(&LATTICE(0, 1), 1, map_column, cart_nbo[WEST], 1,
+                 &LATTICE(0, local_W+1), 1, map_column, cart_nbo[EAST], 1,
                  comm_cart, MPI_STATUS_IGNORE);
 
     // Send east
-    MPI_Sendrecv(&LATTICE(0, local_W), 1, column, cart_nbo[EAST], 1,
-                 &LATTICE(0, 0), 1, column, cart_nbo[WEST], 1,
+    MPI_Sendrecv(&LATTICE(0, local_W), 1, map_column, cart_nbo[EAST], 1,
+                 &LATTICE(0, 0), 1, map_column, cart_nbo[WEST], 1,
                  comm_cart, MPI_STATUS_IGNORE);
 
-    MPI_Type_free(&column);
-    MPI_Type_free(&row);
+    MPI_Type_free(&map_column);
+    MPI_Type_free(&map_row);
 }
 
 
 void border_exchange(void) {
-    // Setup column and row datatypes for easier border exchange
-    MPI_Datatype column, row;
-    MPI_Type_vector(local_H+2, 1, local_W+2, MPI_DOUBLE, &column);
-    MPI_Type_vector(1, local_W+2, local_W+2, MPI_DOUBLE, &row);
-
-    MPI_Type_commit (&column);
-    MPI_Type_commit (&row);
-
     // Send north
     for (int_t d = 0; d < 6; ++d) {
         MPI_Sendrecv(&D_nxt(1, 0, d), 1, row, cart_nbo[NORTH], d,
@@ -400,8 +405,6 @@ void border_exchange(void) {
                      comm_cart, MPI_STATUS_IGNORE);
     }
 
-    MPI_Type_free(&column);
-    MPI_Type_free(&row);
 }
 
 void collide(void)
@@ -411,15 +414,20 @@ void collide(void)
      double N_eq     = 0.0;  // Equilibrium at i
      double delta_N  = 0.0;  // Change
 
-    for (int_t i = 1; i <= local_H; i++) {
-        for (int_t j = 1; j <= local_W; j++) {
+    for (int i = 1; i <= local_H; i++) {
+        for (int j = 1; j <= local_W; j++) {
+            if (LATTICE(i,j) != WALL && LATTICE(i,j) != SOLID && LATTICE(i,j) != FLUID) {
+                printf("(%d, %d)\n", i, j);
+                exit(EXIT_FAILURE);
+            }
             assert(LATTICE(i,j) == WALL || LATTICE(i,j) == SOLID || LATTICE(i,j) == FLUID);
 
             // Ignore solid sites
-            if (LATTICE(i,j) == SOLID)
+            if (LATTICE(i,j) == SOLID) {
                 continue;
+            }
 
-            rho = 0;
+            rho = 0.0;
             V_x(i,j) = V_y(i,j) = 0.0;
             if (LATTICE(i,j) == FLUID) {
                 for (int d = 0; d < DIRECTIONS; d++) {
@@ -434,23 +442,25 @@ void collide(void)
 
             for (int d = 0; d < DIRECTIONS; d++) {
                 // Boundary condition: Reflect of walls
-                if (d != 6 && LATTICE(i,j) == WALL) {
-                    D_nxt(i,j,(d+3)%6) = D_now(i,j,d);
+                if (LATTICE(i,j) == WALL) {
+                    if (d != 6) {
+                        D_nxt(i,j,(d+3)%6) = D_now(i,j,d);
+                    }
                     continue;
                 }
 
                 ev = e[d][1] * V_x(i,j) + e[d][0] * V_y(i,j);
-                if (d != 6) {
+                if (d == 6) {
+                    // Rest particle
+                    N_eq = ALPHA*rho - rho*(V_x(i,j)*V_x(i,j) + V_y(i,j)*V_y(i,j));
+                } else {
+                    // Outgoing vectors
                     N_eq =
                         // F_eq_i
                         rho*(1.0-ALPHA)/6.0
                         + rho/3.0*ev
                         + (2.0*rho/3.0)*ev*ev
                         - rho/6.0*(V_x(i,j)*V_x(i,j)+V_y(i,j)*V_y(i,j));
-                        // F_eq_0
-                        /*+ (ALPHA*rho/6.0 - rho/6.0*(V_x(i,j)*V_x(i,j) + V_y(i,j)*V_y(i,j)));*/
-                } else {
-                    N_eq = (ALPHA*rho - rho*(V_x(i,j)*V_x(i,j) + V_y(i,j)*V_y(i,j)));
                 }
 
                 delta_N = -(D_now(i,j,d)-N_eq)/TAU;
@@ -460,6 +470,7 @@ void collide(void)
 
                 D_nxt(i,j,d) = D_now(i,j,d) + delta_N;
             }
+
         }
     }
 }
