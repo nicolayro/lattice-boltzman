@@ -11,7 +11,7 @@
 #include <mpi.h>
 #include <omp.h>
 
-#define SILENT 1
+#define SILENT 0
 
 #define DIRECTIONS 7
 #define ALPHA 0.5
@@ -176,10 +176,10 @@ int main(int argc, char **argv)
         printf("MPI ranks         %d\n", comm_size);
         printf("OMP threads       %d\n", omp_get_max_threads());
         printf("Iterations        %lld\n", timesteps);
-        printf("Elapsed time (s)  %lf\n", r_end_time - r_start_time);
-        printf("    Collision     %lf\n", r_collide_total);
-        printf("    Exchange      %lf\n", r_exchange_total);
-        printf("    Streaming     %lf\n", r_stream_total);
+        printf("Elapsed time (s)  %lf\n", (r_end_time - r_start_time)/comm_size);
+        printf("    Collision     %lf\n", r_collide_total/comm_size);
+        printf("    Exchange      %lf\n", r_exchange_total/comm_size);
+        printf("    Streaming     %lf\n", r_stream_total/comm_size);
     }
 
     save(timesteps);
