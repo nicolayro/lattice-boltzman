@@ -1,3 +1,4 @@
+#define _XOPEN_SOURCE 600
 #include <assert.h>
 #include <math.h>
 #include <stdbool.h>
@@ -8,6 +9,9 @@
 #include <unistd.h>
 
 #include <mpi.h>
+#include <omp.h>
+
+#define SILENT 1
 
 #define DIRECTIONS 7
 #define ALPHA 0.5
@@ -96,7 +100,6 @@ int main(int argc, char **argv)
 
     if (rank == MPI_RANK_ROOT) {
         options(argc, argv);
-        printf("Initializing domain\n");
         init_domain();
     }
 
@@ -150,7 +153,7 @@ int main(int argc, char **argv)
         stream_total += stream_time - exchange_time;
 
 
-        if (i % 100 == 0) {
+        if (!SILENT && i % 100 == 0) {
             if (rank == MPI_RANK_ROOT)
                 printf("Iteration %lld/%lld\n", i, timesteps);
             save(i/100);
@@ -170,13 +173,16 @@ int main(int argc, char **argv)
         printf("==== Results ====\n");
         printf("Height          400 \n");
         printf("Width           600 \n");
-        printf("Ranks             %d\n", comm_size);
+        printf("MPI ranks         %d\n", comm_size);
+        printf("OMP threads       %d\n", omp_get_max_threads());
         printf("Iterations        %lld\n", timesteps);
         printf("Elapsed time (s)  %lf\n", r_end_time - r_start_time);
         printf("    Collision     %lf\n", r_collide_total);
         printf("    Exchange      %lf\n", r_exchange_total);
         printf("    Streaming     %lf\n", r_stream_total);
     }
+
+    save(timesteps);
 
     MPI_Type_free(&column);
     MPI_Type_free(&row);
@@ -443,17 +449,14 @@ void border_exchange(void) {
 
 void collide(void)
 {
-     double rho      = 0.0;  // Density
-     double ev       = 0.0;  // Dot product of e and v;
-     double N_eq     = 0.0;  // Equilibrium at i
-     double delta_N  = 0.0;  // Change
-
+    #pragma omp parallel for
     for (int i = 1; i <= local_H; i++) {
         for (int j = 1; j <= local_W; j++) {
-            if (LATTICE(i,j) != WALL && LATTICE(i,j) != SOLID && LATTICE(i,j) != FLUID) {
-                printf("(%d, %d)\n", i, j);
-                exit(EXIT_FAILURE);
-            }
+            double rho      = 0.0;  // Density
+            double ev       = 0.0;  // Dot product of e and v;
+            double N_eq     = 0.0;  // Equilibrium at i
+            double delta_N  = 0.0;  // Change
+
             assert(LATTICE(i,j) == WALL || LATTICE(i,j) == SOLID || LATTICE(i,j) == FLUID);
 
             // Ignore solid sites
@@ -511,6 +514,7 @@ void collide(void)
 
 void stream(void)
 {
+    #pragma omp parallel for
     for (int i = 0; i < local_H+2; i++) {
         for (int j = 0; j < local_W+2; j++) {
             for (int d = 0; d < DIRECTIONS; d++) {
