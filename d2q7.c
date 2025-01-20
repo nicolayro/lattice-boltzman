@@ -85,6 +85,7 @@ int cart_pos[2];    // Position in cartesian grid   [y, x]
 int cart_nbo[4];    // Neighbors in grid            [N, E, S, W]
 MPI_Datatype subgrid;       // Datatype for local grid in global grid
 MPI_Datatype column, row;   // Column and row in subgrid (including halo)
+MPI_Datatype columns, rows;
 
 int local_H, local_W, local_x_offsett;
 
@@ -171,8 +172,8 @@ int main(int argc, char **argv)
 
     if (rank == MPI_RANK_ROOT) {
         printf("==== Results ====\n");
-        printf("Height          400 \n");
-        printf("Width           600 \n");
+        printf("Height            %lld\n", H);
+        printf("Width             %lld\n", W);
         printf("MPI ranks         %d\n", comm_size);
         printf("OMP threads       %d\n", omp_get_max_threads());
         printf("Iterations        %lld\n", timesteps);
@@ -225,9 +226,15 @@ void init_types(void)
     MPI_Type_vector(local_H+2, 1, local_W+2, MPI_DOUBLE, &column);
     MPI_Type_vector(1, local_W+2, local_W+2, MPI_DOUBLE, &row);
 
-    MPI_Type_commit (&column);
-    MPI_Type_commit (&row);
+    MPI_Type_commit(&column);
+    MPI_Type_commit(&row);
 
+    // TODO: 7?
+    MPI_Type_create_hvector(6, 1, (local_W+2)*(local_H+2)*sizeof(double), column, &columns);
+    MPI_Type_create_hvector(6, 1, (local_W+2)*(local_H+2)*sizeof(double), row, &rows);
+
+    MPI_Type_commit(&columns);
+    MPI_Type_commit(&rows);
 }
 
 void init_domain(void)
@@ -418,33 +425,32 @@ void scatter_domain(void)
 
 void border_exchange(void) {
     // Send north
-    for (int_t d = 0; d < 6; ++d) {
-        MPI_Sendrecv(&D_nxt(1, 0, d), 1, row, cart_nbo[NORTH], d,
-                     &D_nxt(local_H+1, 0, d), 1, row, cart_nbo[SOUTH], d,
+    /*for (int_t d = 0; d < 6; ++d) {*/
+        MPI_Sendrecv(&D_nxt(1, 0, 0), 1, rows, cart_nbo[NORTH], 0,
+                     &D_nxt(local_H+1, 0, 0), 1, rows, cart_nbo[SOUTH], 0,
                      comm_cart, MPI_STATUS_IGNORE);
-    }
+    /*}*/
 
     // Send south
-    for (int_t d = 0; d < 6; ++d) {
-        MPI_Sendrecv(&D_nxt(local_H, 0, d), 1, row, cart_nbo[SOUTH], d+6,
-                     &D_nxt(0, 0, d), 1, row, cart_nbo[NORTH], d+6,
+    /*for (int_t d = 0; d < 6; ++d) {*/
+        MPI_Sendrecv(&D_nxt(local_H, 0, 0), 1, rows, cart_nbo[SOUTH], 1,
+                     &D_nxt(0, 0, 0), 1, rows, cart_nbo[NORTH], 1,
                      comm_cart, MPI_STATUS_IGNORE);
-    }
+    /*}*/
 
     // Send west
-    for (int_t d = 0; d < 6; ++d) {
-        MPI_Sendrecv(&D_nxt(0, 1, d), 1, column, cart_nbo[WEST], d+12,
-                     &D_nxt(0, local_W+1, d), 1, column, cart_nbo[EAST], d+12,
+    /*for (int_t d = 0; d < 6; ++d) {*/
+        MPI_Sendrecv(&D_nxt(0, 1, 0), 1, columns, cart_nbo[WEST], 2,
+                     &D_nxt(0, local_W+1, 0), 1, columns, cart_nbo[EAST], 2,
                      comm_cart, MPI_STATUS_IGNORE);
-    }
+    /*}*/
 
     // Send east
-    for (int_t d = 0; d < 6; ++d) {
-        MPI_Sendrecv(&D_nxt(0, local_W, d), 1, column, cart_nbo[EAST], d+18,
-                     &D_nxt(0, 0, d), 1, column, cart_nbo[WEST], d+18,
+    /*for (int_t d = 0; d < 6; ++d) {*/
+        MPI_Sendrecv(&D_nxt(0, local_W, 0), 1, columns, cart_nbo[EAST], 3,
+                     &D_nxt(0, 0, 0), 1, columns, cart_nbo[WEST], 3,
                      comm_cart, MPI_STATUS_IGNORE);
-    }
-
+    /*}*/
 }
 
 void collide(void)
